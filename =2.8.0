@@ -1,0 +1,2 @@
+Requirement already satisfied: nlopt in /home/ubuntu/miniconda3/envs/dexfungrasp/lib/python3.8/site-packages (2.7.1)
+Requirement already satisfied: numpy>=1.14 in /home/ubuntu/miniconda3/envs/dexfungrasp/lib/python3.8/site-packages (from nlopt) (1.23.0)
