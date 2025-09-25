@@ -1,13 +1,18 @@
 retargeting:
   type: position
-  urdf_path: omni_hand/inspire_hand_right.urdf
+  urdf_path: omni_hand/omni_hand_right.urdf
 
-  target_joint_names: [ 'pinky_proximal_joint', 'ring_proximal_joint', 'middle_proximal_joint', 'index_proximal_joint',
-                        'thumb_proximal_pitch_joint', 'thumb_proximal_yaw_joint' ]
-  target_link_names: [ "thumb_tip",  "index_tip", "middle_tip", "ring_tip", "pinky_tip" ]
+  # target_joint_names: null
+  target_joint_names: [ 'thumb_cmc_roll', 'thumb_cmc_yaw', 'thumb_cmc_pitch', 'thumb_mcp', 'thumb_ip', 
+                        'index_mcp_roll', 'index_mcp_pitch', 'index_pip', 'index_dip', 
+                        'middle_mcp_roll', 'middle_mcp_pitch', 'middle_pip', 'middle_dip', 
+                        'ring_mcp_pitch', 'ring_pip', 'ring_dip', 
+                        'pinky_mcp_pitch', 'pinky_pip', 'pinky_dip' ]
+  target_link_names: [ "thumb_distal",  "index_distal", "middle_distal", "ring_distal", "pinky_distal",
+                       "thumb_proximal",  "index_middle", "middle_middle", "ring_middle", "pinky_middle" ]
   # target_link_names: [ "thumb_tip",  "index_tip"]
 
-  target_link_human_indices: [ 4, 8, 12, 16, 20 ]
+  target_link_human_indices: [ 4, 8, 12, 16, 20, 2, 6, 10, 14, 18 ]
   # target_link_human_indices: [ 4, 8, ]
   add_dummy_free_joint: True
 
