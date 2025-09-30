@@ -48,6 +48,15 @@ cd dex-retargeting
 pip install -e ".[example]"
 ```
 
+# To eval the best retarget result
+1. 
+cd example/position_retargeting
+python visualize_hand_object.py --robots omni --data_id 2 --retargeting_type VECTOR --two_optimizers --second_optimizer_type FINGERTIP
+
+2. 
+cd example/position_retargeting
+python visualize_hand_object.py --robots omni --data_id 2 --retargeting_type DEXPILOT --two_optimizers --second_optimizer_type FINGERTIP
+
 ## Changelog
 
 ### v0.5.0

@@ -101,7 +101,7 @@ def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: in
         print(f"Grasp poses saved to {grasp_pose_path}")
 
 
-def main(dexycb_dir: str="/home/ubuntu/Documents/DexYCB", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = False):
+def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = False):
     """
     Render the human and robot trajectories for grasping object inside DexYCB dataset.
     The human trajectory is visualized as provided, while the robot trajectory is generated from position retargeting

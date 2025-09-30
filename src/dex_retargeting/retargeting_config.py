@@ -40,6 +40,9 @@ class RetargetingConfig:
 
     # DexPilot retargeting link names
     finger_tip_link_names: Optional[List[str]] = None
+    
+    # Fingertip retargeting link names
+    fingertip_link_names: Optional[List[str]] = None
 
     # Scaling factor for vector retargeting only
     # For example, Allegro is 1.6 times larger than normal human hand, then this scaling factor should be 1.6
@@ -62,7 +65,7 @@ class RetargetingConfig:
     # Low pass filter
     low_pass_alpha: float = 0.1
 
-    _TYPE = ["vector", "position", "dexpilot"]
+    _TYPE = ["vector", "position", "dexpilot", "fingertip"]
     _DEFAULT_URDF_DIR = "./"
 
     def __post_init__(self):
@@ -122,6 +125,17 @@ class RetargetingConfig:
                     "If you do not know exactly how it is used, please leave it to None for default.\n"
                     "\033[00m",
                 )
+                
+        elif self.type == "fingertip":
+            if self.fingertip_link_names is None:
+                raise ValueError("Fingertip retargeting requires: fingertip_link_names")
+            if self.target_link_human_indices is None:
+                raise ValueError("Fingertip retargeting requires: target_link_human_indices")
+            self.target_link_human_indices = self.target_link_human_indices.squeeze()
+            if self.target_link_human_indices.shape != (len(self.fingertip_link_names),):
+                raise ValueError(
+                    "Fingertip retargeting link names and link indices dim mismatch"
+                )
 
         # URDF path check
         urdf_path = Path(self.urdf_path)
@@ -169,6 +183,7 @@ class RetargetingConfig:
             VectorOptimizer,
             PositionOptimizer,
             DexPilotOptimizer,
+            FingertipOptimizer,
         )
         import tempfile
 
@@ -189,6 +204,7 @@ class RetargetingConfig:
         # Add 6D dummy joint to target joint names so that it will also be optimized
         if self.add_dummy_free_joint and self.target_joint_names is not None:
             self.target_joint_names = DUMMY_JOINT_NAMES + self.target_joint_names
+            print("target_joint_names: ", len(self.target_joint_names))
         joint_names = (
             self.target_joint_names
             if self.target_joint_names is not None
@@ -225,6 +241,16 @@ class RetargetingConfig:
                 scaling=self.scaling_factor,
                 project_dist=self.project_dist,
                 escape_dist=self.escape_dist,
+            )
+        elif self.type == "fingertip":
+            optimizer = FingertipOptimizer(
+                robot,
+                joint_names,
+                fingertip_link_names=self.fingertip_link_names,
+                target_link_human_indices=self.target_link_human_indices,
+                scaling=self.scaling_factor,
+                norm_delta=self.normal_delta,
+                huber_delta=self.huber_delta,
             )
         else:
             raise RuntimeError()

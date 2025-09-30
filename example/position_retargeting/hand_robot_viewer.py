@@ -31,12 +31,15 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
         use_ray_tracing=False,
         retargeting_type: RetargetingType = RetargetingType.position,
         two_optimizers: bool = False,
+        second_optimizer_type: str = "VECTOR",
     ):
         super().__init__(headless=headless, use_ray_tracing=use_ray_tracing)
 
         cprint(f"[INFO] Using hand type: {hand_type}", "green")
         cprint(f"[INFO] Using retargeting type: {retargeting_type}", "green")
         cprint(f"[INFO] Using two optimizers: {two_optimizers}", "green")
+        if two_optimizers:
+            cprint(f"[INFO] Second optimizer type: {second_optimizer_type}", "green")
 
         self.robot_names = robot_names
         self.robots: List[sapien.Articulation] = []
@@ -45,6 +48,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
         self.retarget2sapien: List[np.ndarray] = []
         self.hand_type = hand_type
         self.two_optimizers = two_optimizers
+        self.second_optimizer_type = second_optimizer_type
 
         # Load optimizer and filter
         loader = self.scene.create_urdf_loader()
@@ -57,12 +61,25 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             # import ipdb; ipdb.set_trace()  # Debugging point
             ''' Add another optimzer '''
             if two_optimizers:
-                vector_config_path = get_default_config_path(
-                        robot_name, RetargetingType.vector, hand_type
+                # Convert string to RetargetingType enum
+                if second_optimizer_type == "VECTOR":
+                    second_retargeting_type = RetargetingType.vector
+                elif second_optimizer_type == "FINGERTIP":
+                    second_retargeting_type = RetargetingType.fingertip
+                elif second_optimizer_type == "DEXPILOT":
+                    second_retargeting_type = RetargetingType.dexpilot
+                elif second_optimizer_type == "POSITION":
+                    second_retargeting_type = RetargetingType.position
+                else:
+                    raise ValueError(f"Unsupported second optimizer type: {second_optimizer_type}")
+                
+                second_config_path = get_default_config_path(
+                        robot_name, second_retargeting_type, hand_type
                     )
                 override = dict(add_dummy_free_joint=True)
-                config = RetargetingConfig.load_from_file(vector_config_path, override=override)
-                self.vector_retargeting = config.build()
+                config = RetargetingConfig.load_from_file(second_config_path, override=override)
+                self.second_retargeting = config.build()
+                
 
             # Add 6-DoF dummy joint at the root of each robot to make them move freely in the space
             override = dict(add_dummy_free_joint=True)
@@ -83,6 +100,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             urdf_name = urdf_path.name
             temp_dir = tempfile.mkdtemp(prefix="dex_retargeting-")
             temp_path = f"{temp_dir}/{urdf_name}"
+            # TODO: urdf to xml
             robot_urdf.write_xml_file(temp_path)
 
             robot = loader.load(temp_path)
@@ -150,6 +168,17 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             for attr in ("last_solution", "prev_solution", "state"):
                 if hasattr(ret, attr):
                     setattr(ret, attr, None)
+        
+        # Also reset the second retargeter if it exists
+        if hasattr(self, "second_retargeting"):
+            if hasattr(self.second_retargeting, "reset"):
+                self.second_retargeting.reset()
+            if hasattr(self.second_retargeting, "optimizer") and hasattr(self.second_retargeting.optimizer, "reset"):
+                self.second_retargeting.optimizer.reset()
+            # clear cached solutions if present
+            for attr in ("last_solution", "prev_solution", "state"):
+                if hasattr(self.second_retargeting, attr):
+                    setattr(self.second_retargeting, attr, None)
 
         self.scene.update_render()
 
@@ -215,6 +244,15 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 hand_type=self.hand_type,
                 is_mano_convention=True,
             )
+        
+        # Also warm start the second retargeter if it exists
+        if hasattr(self, "second_retargeting"):
+            self.second_retargeting.warm_start(
+                joint[0, :],
+                wrist_quat,
+                hand_type=self.hand_type,
+                is_mano_convention=True,
+            )
 
         # Loop rendering
         step_per_frame = int(60 / fps)
@@ -258,6 +296,16 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 if retargeting_type == "POSITION":
                     indices = indices
                     ref_value = joint[indices, :] # target link's 3D position, (5, 3)
+                elif retargeting_type == "FINGERTIP":
+                    indices = indices
+                    ref_value = joint[indices, :] # fingertip positions, (5, 3)
+                elif retargeting_type == "DEXPILOT":
+                    # DexPilot uses vector-based retargeting similar to vector retargeting
+                    origin_indices = indices[0, :]
+                    task_indices = indices[1, :]
+                    ref_value = (
+                        joint[task_indices, :] - joint[origin_indices, :]
+                    )
                 else: # vector retargeting
                     origin_indices = indices[0, :]
                     task_indices = indices[1, :]
@@ -267,18 +315,36 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 qpos = retargeting.retarget(ref_value)[retarget2sapien] # (18, )
                 # qpos[1] += 0.8  # Set the root position to zero
 
-                '''Vector retargeting for finger'''
+                '''Second optimizer for finger'''
                 if self.two_optimizers:
-                    retargeting_type = self.vector_retargeting.optimizer.retargeting_type
-                    indices = self.vector_retargeting.optimizer.target_link_human_indices
-                    origin_indices = indices[0, :]
-                    task_indices = indices[1, :]
-                    ref_value = (
-                        joint[task_indices, :] - joint[origin_indices, :]
-                    ) 
-                    qpos_vector = self.vector_retargeting.retarget(ref_value)[retarget2sapien]
+                    second_retargeting_type = self.second_retargeting.optimizer.retargeting_type
+                    second_indices = self.second_retargeting.optimizer.target_link_human_indices
+                    
+                    if second_retargeting_type == "POSITION":
+                        second_ref_value = joint[second_indices, :]
+                    elif second_retargeting_type == "FINGERTIP":
+                        second_ref_value = joint[second_indices, :]
+                    elif second_retargeting_type == "DEXPILOT":
+                        # DexPilot uses vector-based retargeting
+                        second_origin_indices = second_indices[0, :]
+                        second_task_indices = second_indices[1, :]
+                        second_ref_value = (
+                            joint[second_task_indices, :] - joint[second_origin_indices, :]
+                        )
+                    else: # vector retargeting
+                        second_origin_indices = second_indices[0, :]
+                        second_task_indices = second_indices[1, :]
+                        second_ref_value = (
+                            joint[second_task_indices, :] - joint[second_origin_indices, :]
+                        )
+                    
+                    # Update second optimizer's last_qpos with first optimizer's result
+                    self.second_retargeting.last_qpos = qpos[retarget2sapien]
+                    
+                    qpos_second = self.second_retargeting.retarget(second_ref_value)[retarget2sapien]
                     # import ipdb; ipdb.set_trace()  # Debugging point
-                    qpos[3:] = qpos_vector[3:] # only replace the finger joints     
+                    qpos = qpos_second
+                    # qpos[3:] = qpos_second[3:] # only replace the finger joints     
                 
                 ''' Set joint '''
                 robot.set_qpos(qpos)

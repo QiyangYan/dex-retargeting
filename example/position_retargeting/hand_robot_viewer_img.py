@@ -225,6 +225,16 @@ class RobotHandDatasetSAPIENViewer_IMG(HandDatasetSAPIENViewer):
             if retargeting_type == "POSITION":
                 indices = indices
                 ref_value = joint[indices, :] # target link's 3D position, (5, 3)
+            elif retargeting_type == "FINGERTIP":
+                indices = indices
+                ref_value = joint[indices, :] # fingertip positions, (5, 3)
+            elif retargeting_type == "DEXPILOT":
+                # DexPilot uses vector-based retargeting similar to vector retargeting
+                origin_indices = indices[0, :]
+                task_indices = indices[1, :]
+                ref_value = (
+                    joint[task_indices, :] - joint[origin_indices, :]
+                )
             else: # vector retargeting
                 origin_indices = indices[0, :]
                 task_indices = indices[1, :]

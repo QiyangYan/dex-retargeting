@@ -306,6 +306,125 @@ class VectorOptimizer(Optimizer):
         return objective
 
 
+class FingertipOptimizer(Optimizer):
+    retargeting_type = "FINGERTIP"
+
+    def __init__(
+        self,
+        robot: RobotWrapper,
+        target_joint_names: List[str],
+        fingertip_link_names: List[str],
+        target_link_human_indices: np.ndarray,
+        huber_delta=0.02,
+        norm_delta=4e-3,
+        scaling=1.0,
+    ):
+        """
+        FingertipOptimizer for optimizing fingertip positions
+        
+        Args:
+            robot: RobotWrapper instance
+            target_joint_names: List of joint names to optimize
+            fingertip_link_names: List of fingertip link names (typically 5 for five fingers)
+            target_link_human_indices: Human hand fingertip indices corresponding to robot fingertips
+            huber_delta: Huber loss parameter for smooth L1 loss
+            norm_delta: Regularization parameter for joint angle changes
+            scaling: Scaling factor for target positions
+        """
+        super().__init__(robot, target_joint_names, target_link_human_indices)
+        self.fingertip_link_names = fingertip_link_names
+        self.num_fingertips = len(fingertip_link_names)
+        self.huber_loss = torch.nn.SmoothL1Loss(beta=huber_delta, reduction="mean")
+        self.norm_delta = norm_delta
+        self.scaling = scaling
+
+        # Sanity check for five fingers
+        if self.num_fingertips != 5:
+            print(f"Warning: Expected 5 fingertips, but got {self.num_fingertips}")
+
+        # Cache fingertip link indices
+        self.fingertip_link_indices = self.get_link_indices(fingertip_link_names)
+
+        self.opt.set_ftol_abs(1e-5)
+
+    def get_objective_function(
+        self, target_fingertip_pos: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray
+    ):
+        """
+        Create objective function for fingertip position optimization
+        
+        Args:
+            target_fingertip_pos: Target fingertip positions (N, 3) where N is number of fingertips
+            fixed_qpos: Fixed joint positions
+            last_qpos: Previous joint positions for regularization
+        
+        Returns:
+            objective function for nlopt optimization
+        """
+        qpos = np.zeros(self.num_joints)
+        qpos[self.idx_pin2fixed] = fixed_qpos
+        torch_target_pos = torch.as_tensor(target_fingertip_pos) * self.scaling
+        torch_target_pos.requires_grad_(False)
+
+        def objective(x: np.ndarray, grad: np.ndarray) -> float:
+            qpos[self.idx_pin2target] = x
+
+            # Kinematics forwarding for qpos
+            if self.adaptor is not None:
+                qpos[:] = self.adaptor.forward_qpos(qpos)[:]
+
+            self.robot.compute_forward_kinematics(qpos)
+            fingertip_poses = [
+                self.robot.get_link_pose(index) for index in self.fingertip_link_indices
+            ]
+            fingertip_pos = np.stack(
+                [pose[:3, 3] for pose in fingertip_poses], axis=0
+            )  # (num_fingertips, 3)
+
+            # Torch computation for accurate loss and grad
+            torch_fingertip_pos = torch.as_tensor(fingertip_pos)
+            torch_fingertip_pos.requires_grad_()
+
+            # Loss term for fingertip position matching
+            position_loss = self.huber_loss(torch_fingertip_pos, torch_target_pos)
+            result = position_loss.cpu().detach().item()
+
+            if grad.size > 0:
+                jacobians = []
+                for i, index in enumerate(self.fingertip_link_indices):
+                    link_body_jacobian = self.robot.compute_single_link_local_jacobian(
+                        qpos, index
+                    )[:3, ...]
+                    link_pose = fingertip_poses[i]
+                    link_rot = link_pose[:3, :3]
+                    link_kinematics_jacobian = link_rot @ link_body_jacobian
+                    jacobians.append(link_kinematics_jacobian)
+
+                # Note: the joint order in this jacobian is consistent with pinocchio
+                jacobians = np.stack(jacobians, axis=0)
+                position_loss.backward()
+                grad_pos = torch_fingertip_pos.grad.cpu().numpy()[:, None, :]
+
+                # Convert the jacobian from pinocchio order to target order
+                if self.adaptor is not None:
+                    jacobians = self.adaptor.backward_jacobian(jacobians)
+                else:
+                    jacobians = jacobians[..., self.idx_pin2target]
+
+                # Compute the gradient to the qpos
+                grad_qpos = np.matmul(grad_pos, jacobians)
+                grad_qpos = grad_qpos.mean(1).sum(0)
+                
+                # Add regularization term to prevent large joint angle changes
+                grad_qpos += 2 * self.norm_delta * (x - last_qpos)
+
+                grad[:] = grad_qpos[:]
+
+            return result
+
+        return objective
+
+
 class DexPilotOptimizer(Optimizer):
     """Retargeting optimizer using the method proposed in DexPilot
 
