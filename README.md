@@ -63,7 +63,7 @@ python store_hand_object.py --robots omni --retargeting_type DEXPILOT --two_opti
 
 # To visualize the results with contact link
 cd example/position_retargeting
-python visualize_contact.py /home/guizhewei/guizhewei/Dexycb_dataset/contact_info_mesh_based_20251011_112456.npy --data-id 0
+python visualize_contact.py path_to_your_file.npy --data-id 0
 
 
 ## Changelog

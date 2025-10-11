@@ -245,22 +245,46 @@ def visualize_from_saved_data(
     Load saved contact info and visualize it.
     
     Args:
-        contact_file: Path to saved .npy contact info file
+        contact_file: Path to saved .npy file (grasp_poses with contact_labels or standalone contact_info)
         data_id: Which data ID to visualize
         dexycb_dir: Path to DexYCB dataset
         save_image: Optional path to save screenshot
     """
     from dataset import DexYCBVideoDataset
+    import yaml
     
-    # Load contact info
-    contact_data = np.load(contact_file, allow_pickle=True).item()
+    # Load data file
+    saved_data = np.load(contact_file, allow_pickle=True).item()
     
-    if data_id not in contact_data:
+    if data_id not in saved_data:
         print(f"ERROR: Data ID {data_id} not found in {contact_file}")
-        print(f"Available IDs: {list(contact_data.keys())}")
+        print(f"Available IDs: {list(saved_data.keys())}")
         return
     
-    contact_info = contact_data[data_id]
+    data_entry = saved_data[data_id]
+    
+    # Check if this is new format (grasp_poses with contact_labels) or old format (standalone contact_info)
+    # New format: data_entry is a dict with 'contact_labels' key
+    # Old format: data_entry is a dict with 'target_object_idx' and 'target_object_id' keys
+    
+    if 'contact_labels' in data_entry:
+        contact_labels = data_entry['contact_labels']
+        
+        # Check if it's old format with metadata or new format without metadata
+        if 'target_object_idx' in data_entry and 'target_object_id' in data_entry:
+            # Old standalone contact_info format
+            target_object_idx = data_entry['target_object_idx']
+            target_object_id = data_entry['target_object_id']
+            print("📂 Detected old format (standalone contact_info)")
+        else:
+            # New format: integrated in grasp_poses, need to get metadata from dataset
+            print("📂 Detected new format (contact_labels in grasp_poses)")
+            target_object_idx = None
+            target_object_id = None
+    else:
+        print(f"ERROR: No 'contact_labels' found in data entry {data_id}")
+        print(f"Available keys: {list(data_entry.keys())}")
+        return
     
     # Load dataset
     data_root = Path(dexycb_dir)
@@ -268,17 +292,43 @@ def visualize_from_saved_data(
     dataset = DexYCBVideoDataset(data_root, hand_type="right")
     sampled_data = dataset[data_id]
     
-    # Get last frame data
+    # Get capture name and ycb_ids
     capture_name = sampled_data["capture_name"]
-    target_object_idx = contact_info['target_object_idx']
-    target_object_id = contact_info['target_object_id']
+    ycb_ids = sampled_data["ycb_ids"]
+    
+    # If target_object info not in file, get it from meta.yml
+    if target_object_idx is None or target_object_id is None:
+        capture_dir = data_root / "20200709-subject-01" / capture_name
+        meta_file = capture_dir / "meta.yml"
+        
+        with open(meta_file, 'r') as f:
+            meta = yaml.safe_load(f)
+        
+        target_object_idx = meta.get('ycb_grasp_ind', 0)
+        
+        # Validate index
+        if target_object_idx >= len(ycb_ids):
+            print(f"Warning: ycb_grasp_ind ({target_object_idx}) >= len(ycb_ids) ({len(ycb_ids)}), using 0")
+            target_object_idx = 0
+        
+        target_object_id = ycb_ids[target_object_idx]
+        print(f"Retrieved from meta.yml: target_object_idx={target_object_idx}, target_object_id={target_object_id}")
     
     # Load labels
     capture_dir = data_root / "20200709-subject-01" / capture_name
     camera_dirs = [d for d in capture_dir.iterdir() if d.is_dir() and d.name.startswith("8")]
+    
+    if not camera_dirs:
+        print(f"ERROR: No camera directories found in {capture_dir}")
+        return
+    
     camera_dir = camera_dirs[0]
     
     label_files = list(camera_dir.glob("labels_*.npz"))
+    if not label_files:
+        print(f"ERROR: No label files found in {camera_dir}")
+        return
+    
     label_files.sort(key=lambda x: int(x.stem.split('_')[1]))
     last_label_file = label_files[-1]
     
@@ -298,11 +348,11 @@ def visualize_from_saved_data(
     
     visualize_contact_3d(
         hand_joints_3d=hand_joints_3d,
-        contact_labels=contact_info['contact_labels'],
+        contact_labels=contact_labels,
         object_pose=object_pose_7d,
         object_id=target_object_id,
         models_dir=models_dir,
-        distances=contact_info.get('distances_to_center'),
+        distances=data_entry.get('distances_to_center'),
         save_image=save_image
     )
 
