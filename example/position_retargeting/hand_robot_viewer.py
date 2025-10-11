@@ -344,6 +344,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                     qpos_second = self.second_retargeting.retarget(second_ref_value)[retarget2sapien]
                     # import ipdb; ipdb.set_trace()  # Debugging point
                     qpos = qpos_second
+                    print("qpos: ", qpos.shape)
                     # qpos[3:] = qpos_second[3:] # only replace the finger joints     
                 
                 ''' Set joint '''
@@ -390,7 +391,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             
             # robot info
             "robot_names": self.robot_names,
-            "robot_pose": robot_pose_frame_world, # robot pose : 6 pose + 6 actuated joint + 6 joint
+            "robot_pose": robot_pose_frame_world, # robot pose : 6 pose + n DOF
             "hand_type": self.hand_type,
         }
 

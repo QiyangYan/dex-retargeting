@@ -57,6 +57,15 @@ python visualize_hand_object.py --robots omni --data_id 2 --retargeting_type VEC
 cd example/position_retargeting
 python visualize_hand_object.py --robots omni --data_id 2 --retargeting_type DEXPILOT --two_optimizers --second_optimizer_type FINGERTIP
 
+# To save the result (with contact)
+cd example/position_retargeting
+python store_hand_object.py --robots omni --retargeting_type DEXPILOT --two_optimizers --second_optimizer_type FINGERTIP --save_grasp_pose --save-contact-info
+
+# To visualize the results with contact link
+cd example/position_retargeting
+python visualize_contact.py /home/guizhewei/guizhewei/Dexycb_dataset/contact_info_mesh_based_20251011_112456.npy --data-id 0
+
+
 ## Changelog
 
 ### v0.5.0
