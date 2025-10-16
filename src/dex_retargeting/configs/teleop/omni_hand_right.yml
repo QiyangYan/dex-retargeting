@@ -3,11 +3,11 @@ retargeting:
   urdf_path: omni_hand/omni_hand_right.urdf
 
   # target_joint_names: null
-  target_joint_names: [ 'thumb_cmc_roll', 'thumb_cmc_yaw', 'thumb_cmc_pitch', 'thumb_mcp', 'thumb_ip', 
-                        'index_mcp_roll', 'index_mcp_pitch', 'index_pip', 'index_dip', 
-                        'middle_mcp_roll', 'middle_mcp_pitch', 'middle_pip', 'middle_dip', 
-                        'ring_mcp_pitch', 'ring_pip', 'ring_dip', 
-                        'pinky_mcp_pitch', 'pinky_pip', 'pinky_dip' ]
+  target_joint_names: [ 'thumb_cmc_roll', 'thumb_cmc_yaw', 'thumb_cmc_pitch', 'thumb_mcp',
+                        'index_mcp_roll', 'index_mcp_pitch', 'index_pip', 
+                        'middle_mcp_roll', 'middle_mcp_pitch', 'middle_pip', 
+                        'ring_mcp_pitch', 
+                        'pinky_mcp_pitch']
   
   target_origin_link_names: [ "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link", "hand_base_link" ]
   

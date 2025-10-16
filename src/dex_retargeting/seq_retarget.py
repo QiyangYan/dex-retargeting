@@ -28,7 +28,6 @@ class SeqRetargeting:
             joint_limits[:] = robot.joint_limits[:]
             self.optimizer.set_joint_limit(joint_limits[self.optimizer.idx_pin2target])
         self.joint_limits = joint_limits[self.optimizer.idx_pin2target]
-
         # Temporal information
         self.last_qpos = joint_limits.mean(1)[self.optimizer.idx_pin2target].astype(
             np.float32
@@ -111,7 +110,6 @@ class SeqRetargeting:
 
     def retarget(self, ref_value, fixed_qpos=np.array([])):
         tic = time.perf_counter()
-
         qpos = self.optimizer.retarget(
             ref_value=ref_value.astype(np.float32),
             fixed_qpos=fixed_qpos.astype(np.float32),

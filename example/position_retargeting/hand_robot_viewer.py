@@ -106,6 +106,8 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             robot = loader.load(temp_path)
             self.robots.append(robot)
             sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
+            print("sapien_joint_names: ", sapien_joint_names)
+            print("retargeting.joint_names: ", retargeting.joint_names)
             retarget2sapien = np.array(
                 [retargeting.joint_names.index(n) for n in sapien_joint_names]
             ).astype(int)
@@ -294,10 +296,8 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 retargeting_type = retargeting.optimizer.retargeting_type
                 indices = retargeting.optimizer.target_link_human_indices # predefined mapping indices
                 if retargeting_type == "POSITION":
-                    indices = indices
                     ref_value = joint[indices, :] # target link's 3D position, (5, 3)
                 elif retargeting_type == "FINGERTIP":
-                    indices = indices
                     ref_value = joint[indices, :] # fingertip positions, (5, 3)
                 elif retargeting_type == "DEXPILOT":
                     # DexPilot uses vector-based retargeting similar to vector retargeting
@@ -311,8 +311,11 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                     task_indices = indices[1, :]
                     ref_value = (
                         joint[task_indices, :] - joint[origin_indices, :]
-                    ) 
-                qpos = retargeting.retarget(ref_value)[retarget2sapien] # (18, )
+                    )
+                
+                # Get full retargeting output (robot.dof dimensions) before sapien indexing
+                qpos_full = retargeting.retarget(ref_value)
+                qpos = qpos_full[retarget2sapien] # (18, )
                 # qpos[1] += 0.8  # Set the root position to zero
 
                 '''Second optimizer for finger'''
@@ -339,7 +342,8 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                         )
                     
                     # Update second optimizer's last_qpos with first optimizer's result
-                    self.second_retargeting.last_qpos = qpos[retarget2sapien]
+                    # Extract only the target joints (idx_pin2target) from the full qpos
+                    self.second_retargeting.last_qpos = qpos_full[self.second_retargeting.optimizer.idx_pin2target]
                     
                     qpos_second = self.second_retargeting.retarget(second_ref_value)[retarget2sapien]
                     # import ipdb; ipdb.set_trace()  # Debugging point
@@ -350,7 +354,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 ''' Set joint '''
                 robot.set_qpos(qpos)
                 robot_pose_frame_world.append(qpos)
-                
+            
             self.scene.update_render()
             if self.headless:
                 self.camera.take_picture()

@@ -241,7 +241,7 @@ def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
             models_dir=models_dir,        # Pass models directory
             object_idx=target_object_idx,
             sphere_radius=0.01,
-            distance_threshold=0.01  # 1cm threshold for surface distance (mesh-based detection)
+            distance_threshold=0.02  # 1cm threshold for surface distance (mesh-based detection)
         )
         
         # Prepare contact info with 21-dim contact array as primary data
