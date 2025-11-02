@@ -642,6 +642,7 @@ class DexonomyGraspSAPIENViewer:
         
         # Set joint angles
         robot.set_qpos(qpos.astype(np.float32))
+        print("retargeted qpos", qpos)
     
     def render_grasp_single(self, data: Dict, fps: int = 10, y_offset: float = 0.0):
         """
@@ -717,6 +718,7 @@ class DexonomyGraspSAPIENViewer:
         cprint(f"  Robot 0 (Shadow Hand): y_offset = 0.00m (original dataset pose)", "white")
         self.set_shadow_qpos(grasp_qpos, robot_idx=0, y_offset=0.0)
         
+        print("shadow_qpos", grasp_qpos)
         # Shadow Hand object stays at original pose (no offset)
         # Already set in load_object, no need to modify
         

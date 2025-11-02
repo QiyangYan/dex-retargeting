@@ -36,7 +36,7 @@ python visualize_dexonomy_grasp.py \
 python visualize_dexonomy_grasp.py \
     --robots shadow_no_wrist omni \
     --retargeting_type vector \
-    --two_optimizers True \
+    --two_optimizers \
     --second_optimizer_type FINGERTIP \
     --data_idx 0
 ```

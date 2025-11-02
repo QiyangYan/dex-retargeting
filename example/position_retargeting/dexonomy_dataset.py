@@ -128,7 +128,8 @@ class DexonomyGraspDataset:
     ):
         """Build index of all available grasp samples (each grasp individually)"""
         grasp_types = [grasp_type] if grasp_type else self.GRASP_TYPES
-        max_iters = 100
+        #TODO: if tackle in batches ,remove this
+        max_iters = 10000
 
         for gtype in grasp_types:
             grasp_type_dir = self.grasp_dir / gtype

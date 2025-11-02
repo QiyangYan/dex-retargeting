@@ -3,7 +3,7 @@
 模仿 store_hand_object.py 的逻辑，批量处理 Dexonomy 数据集
 """
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 from collections import defaultdict
 
 import numpy as np
@@ -76,7 +76,22 @@ def retarget_shadow_to_robot_no_offset(
     # 对齐机器人手与 Shadow Hand 的 palm frame
     canonical_frame = retargeting.optimizer.canonical_frame
     shadow_rotation = Rotation.from_quat([shadow_qpos[4], shadow_qpos[5], shadow_qpos[6], shadow_qpos[3]])
-    robot_r = shadow_rotation * Rotation.from_matrix(canonical_frame)
+    
+    # 处理 canonical_frame 可能为 None 的情况
+    if canonical_frame is None or (isinstance(canonical_frame, np.ndarray) and canonical_frame.size == 0):
+        # 如果没有 canonical_frame，使用单位矩阵（不进行额外的旋转对齐）
+        # 使用单位四元数 [0, 0, 0, 1] 表示无旋转
+        canonical_rotation = Rotation.from_quat([0, 0, 0, 1])
+    else:
+        # 确保 canonical_frame 是正确的形状 (3, 3)
+        canonical_frame = np.array(canonical_frame)
+        if canonical_frame.shape != (3, 3):
+            cprint(f"[WARNING] canonical_frame has unexpected shape {canonical_frame.shape}, using identity", "yellow")
+            canonical_rotation = Rotation.from_quat([0, 0, 0, 1])
+        else:
+            canonical_rotation = Rotation.from_matrix(canonical_frame)
+    
+    robot_r = shadow_rotation * canonical_rotation
     
     # 获取完整的 retargeting 输出（第一个优化器）
     last_pos = np.concatenate([shadow_qpos[:3], robot_r.as_euler("XYZ", degrees=False), retargeting.mean_qpos[6:]])
@@ -124,6 +139,7 @@ def store_retargeted_poses(
     data_id_start: Optional[int] = None,
     data_id_end: Optional[int] = None,
     visualize: bool = False,
+    max_objects: Optional[int] = None,
 ):
     """
     批量处理 Dexonomy 数据集，存储 Shadow Hand 到其他机器手的 retargeting 结果
@@ -140,6 +156,7 @@ def store_retargeted_poses(
         data_id_start: 起始数据索引（None 表示从头开始）
         data_id_end: 结束数据索引（None 表示处理到最后）
         visualize: 是否可视化（False 表示 headless 模式）
+        max_objects: 最大处理的物体数量（None 表示处理所有物体，1 表示只处理第一个物体）
     """
     # 转换 retargeting_type
     if retargeting_type == "POSITION":
@@ -195,7 +212,8 @@ def store_retargeted_poses(
     #     "grasp_type": str,          # 抓取类型
     #     "scale_name": str,          # 缩放名称
     #     "grasp_idx": int,           # 在当前文件中的抓取索引
-    #     "scene_scale": float,       # 场景缩放
+    #     "scene_scale": float,       # 场景缩放因子（标量）
+    #     "obj_scale": np.ndarray,    # 物体基础缩放 (3,) [sx, sy, sz]
     #     "shadow_qpos": np.ndarray,  # Shadow Hand 原始 qpos (29,)
     #     "robot_poses": {            # 各机器人的 retargeted qpos（不包含 y_offset）
     #       str(robot_name): np.ndarray
@@ -215,9 +233,18 @@ def store_retargeted_poses(
     cprint(f"[INFO] Grouped into {len(object_id_to_indices)} unique objects", "green")
     cprint(f"[INFO] Object distribution: {[(obj_id, len(indices)) for obj_id, indices in list(object_id_to_indices.items())[:5]]}...", "white")
     
+    # 应用 max_objects 限制
+    if max_objects is not None and max_objects > 0:
+        object_items = list(object_id_to_indices.items())[:max_objects]
+        cprint(f"[INFO] Limiting to {max_objects} object(s) (will process {len(object_items)} objects)", "yellow")
+    else:
+        object_items = list(object_id_to_indices.items())
+    
     # 批量处理每个 object_id
-    for object_id, indices in tqdm(object_id_to_indices.items(), desc="Processing objects"):
-        cprint(f"\n[INFO] Processing object {object_id} ({len(indices)} grasps)...", "cyan")
+    objects_processed = 0
+    for object_id, indices in tqdm(object_items, desc="Processing objects"):
+        objects_processed += 1
+        cprint(f"\n[INFO] Processing object {object_id} ({len(indices)} grasps) [{objects_processed}/{len(object_items)}]...", "cyan")
         
         for idx in tqdm(indices, desc=f"Object {object_id}", leave=False):
             try:
@@ -226,6 +253,13 @@ def store_retargeted_poses(
                 
                 # 获取 Shadow Hand qpos（使用 pin_order 版本）
                 shadow_qpos = data["grasp_qpos_pin_order"]  # (29,)
+                grasp_qpos = data["grasp_qpos"]
+                
+                # 获取物体的base scale（obj_scale）
+                scene_config = data["scene_config"]
+                object_id_key = data["object_id"]
+                obj_config = scene_config[object_id_key]
+                obj_scale = np.array(obj_config["scale"])  # [sx, sy, sz]
                 
                 # 存储基本信息
                 retargeted_poses_dict[idx] = {
@@ -233,8 +267,9 @@ def store_retargeted_poses(
                     "grasp_type": data["grasp_type"],
                     "scale_name": data["scale_name"],
                     "grasp_idx": data["grasp_idx"],
-                    "scene_scale": data["scene_scale"],
-                    "shadow_qpos": shadow_qpos.copy(),  # Shadow Hand 原始 qpos
+                    "scene_scale": data["scene_scale"],  # 场景缩放因子（标量）
+                    "obj_scale": obj_scale.copy(),  # 物体基础缩放 [sx, sy, sz]
+                    "shadow_qpos": grasp_qpos.copy(),  # Shadow Hand 原始 qpos
                     "robot_poses": {},  # 存储每个机器人的 retargeted qpos
                 }
                 
@@ -253,23 +288,97 @@ def store_retargeted_poses(
                     else:
                         cprint(f"  [WARNING] Failed to retarget to {robot_name}", "yellow")
                 
-                # 如果可视化，加载物体和手并渲染一帧
+                # 如果可视化，加载物体和手并渲染
                 if visualize:
                     viewer.load_object(data)
-                    viewer.set_shadow_qpos(shadow_qpos, robot_idx=0, y_offset=0.0)
+                    viewer.set_shadow_qpos(grasp_qpos, robot_idx=0, y_offset=0.0)
                     for robot_idx in range(1, len(robots)):
                         retargeted_qpos = retargeted_poses_dict[idx]["robot_poses"].get(str(robots[robot_idx]))
                         if retargeted_qpos is not None:
                             viewer.robots[robot_idx].set_qpos(retargeted_qpos.astype(np.float32))
+                    
+                    # 创建关节位置标记（使用 retargeting 中实际使用的关节索引）
+                    joint_positions_world = viewer._compute_shadow_joint_positions(shadow_qpos)
+                    
+                    # 获取 retargeting 中使用的关节索引（用于第一个机器人）
+                    if len(robots) > 1:
+                        retargeting = viewer.retargetings[1]  # 第一个 retargeting 目标机器人
+                        if retargeting is not None:
+                            indices = retargeting.optimizer.target_link_human_indices
+                            retargeting_type = retargeting.optimizer.retargeting_type
+                            
+                            # 根据 retargeting 类型提取实际使用的关节索引
+                            if retargeting_type == "POSITION" or retargeting_type == "FINGERTIP":
+                                # 一维数组，直接使用
+                                used_indices = np.unique(indices.flatten())
+                            elif retargeting_type == "VECTOR" or retargeting_type == "DEXPILOT":
+                                # 二维数组，提取所有 origin 和 task 索引
+                                if len(indices.shape) == 2 and indices.shape[0] >= 2:
+                                    origin_indices = indices[0, :]
+                                    task_indices = indices[1, :]
+                                    used_indices = np.unique(np.concatenate([origin_indices, task_indices]))
+                                else:
+                                    # 如果不是二维数组，使用所有索引
+                                    used_indices = np.unique(indices.flatten())
+                            else:
+                                # 默认使用所有索引
+                                used_indices = np.unique(indices.flatten())
+                            
+                            # 只显示使用的关节
+                            joint_positions_to_show = joint_positions_world[used_indices]
+                            cprint(f"  [DEBUG] Showing {len(used_indices)} joints used in retargeting (indices: {used_indices})", "white")
+                        else:
+                            # 如果没有 retargeting，显示所有关节
+                            joint_positions_to_show = joint_positions_world
+                            cprint(f"  [DEBUG] No retargeting found, showing all {len(joint_positions_world)} joints", "white")
+                    else:
+                        # 如果没有目标机器人，显示所有关节
+                        joint_positions_to_show = joint_positions_world
+                        cprint(f"  [DEBUG] No target robots, showing all {len(joint_positions_world)} joints", "white")
+                    
+                    viewer._create_joint_marker_spheres(joint_positions_to_show)
+                    
                     viewer.scene.update_render()
+                    
                     if not viewer.headless:
-                        viewer.viewer.render()
+                        # 确保 viewer 不是 paused 状态
+                        if hasattr(viewer, 'viewer') and viewer.viewer is not None:
+                            viewer.viewer.paused = False
+                            
+                            # 持续渲染，但设置一个超时机制
+                            # 渲染一段时间后自动继续（或者等待用户关闭窗口）
+                            import time
+                            render_start_time = time.time()
+                            render_duration = 60.0  # 渲染 60 秒后自动继续
+                            
+                            cprint(f"  [INFO] Rendering data {idx} (object: {data['object_id']}, grasp: {data['grasp_type']})", "cyan")
+                            cprint(f"  [INFO] Close window or wait {render_duration}s to continue...", "yellow")
+                            
+                            while not viewer.viewer.closed:
+                                viewer.viewer.render()
+                                # 如果超过指定时间，自动继续
+                                if time.time() - render_start_time > render_duration:
+                                    cprint(f"  [INFO] Timeout reached, continuing to next sample...", "yellow")
+                                    break
+                        else:
+                            cprint(f"  [WARNING] Viewer not initialized, skipping visualization", "yellow")
+                    else:
+                        # Headless 模式：渲染几帧
+                        frames_to_render = 50
+                        for frame in range(frames_to_render):
+                            viewer.scene.update_render()
+                            viewer.camera.take_picture()
                     
             except Exception as e:
                 cprint(f"[ERROR] Failed to process data {idx}: {e}", "red")
                 import traceback
                 traceback.print_exc()
                 continue
+        
+        # 检查是否达到最大物体数量限制
+        if max_objects is not None and objects_processed >= max_objects:
+            cprint(f"\n[INFO] Reached max_objects limit ({max_objects}), stopping processing", "yellow")
+            break
     
     # 保存结果
     if len(retargeted_poses_dict) > 0:
@@ -278,7 +387,11 @@ def store_retargeted_poses(
         
         # 转换为普通字典（移除 defaultdict）
         result_dict = dict(retargeted_poses_dict)
-        
+
+        # DEBUG
+        # print("retargeted_poses_dict", retargeted_poses_dict[0]["shadow_qpos"])
+        # print("retargeted_poses_dict", retargeted_poses_dict[0]["robot_poses"])
+
         np.save(save_path, result_dict)
         cprint(f"\n[INFO] Saved {len(result_dict)} retargeted poses to {save_path}", "green")
         cprint(f"[INFO] Robot names: {[str(r) for r in robots]}", "cyan")
@@ -301,6 +414,7 @@ def main(
     data_id_start: Optional[int] = None,
     data_id_end: Optional[int] = None,
     visualize: bool = False,
+    max_objects: Optional[int] = None,
 ):
     """
     主函数：存储 Shadow Hand 到其他机器手的 retargeting 结果
@@ -317,6 +431,7 @@ def main(
         data_id_start: 起始数据索引
         data_id_end: 结束数据索引
         visualize: 是否可视化
+        max_objects: 最大处理的物体数量（None 表示处理所有物体，1 表示只处理第一个物体）
     """
     data_root = Path(dexonomy_dir).absolute()
     robot_dir = (
@@ -346,6 +461,7 @@ def main(
         data_id_start=data_id_start,
         data_id_end=data_id_end,
         visualize=visualize,
+        max_objects=max_objects,
     )
 
 
