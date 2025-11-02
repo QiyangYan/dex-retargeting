@@ -24,6 +24,7 @@ OPERATOR2MANO_LEFT = np.array(
 class RobotName(enum.Enum):
     allegro = enum.auto()
     shadow = enum.auto()
+    shadow_no_wrist = enum.auto()
     svh = enum.auto()
     leap = enum.auto()
     ability = enum.auto()
@@ -49,6 +50,7 @@ class HandType(enum.Enum):
 ROBOT_NAME_MAP = {
     RobotName.allegro: "allegro_hand",
     RobotName.shadow: "shadow_hand",
+    RobotName.shadow_no_wrist: "shadow_hand_no_wrist",
     RobotName.svh: "schunk_svh_hand",
     RobotName.leap: "leap_hand",
     RobotName.ability: "ability_hand",

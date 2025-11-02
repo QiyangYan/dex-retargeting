@@ -106,6 +106,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
             robot = loader.load(temp_path)
             self.robots.append(robot)
             sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
+            print("sapien_joint_names: ", len(sapien_joint_names))
             print("sapien_joint_names: ", sapien_joint_names)
             print("retargeting.joint_names: ", retargeting.joint_names)
             retarget2sapien = np.array(
@@ -315,6 +316,7 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
                 
                 # Get full retargeting output (robot.dof dimensions) before sapien indexing
                 qpos_full = retargeting.retarget(ref_value)
+                # from ipdb import set_trace; set_trace() 
                 qpos = qpos_full[retarget2sapien] # (18, )
                 # qpos[1] += 0.8  # Set the root position to zero
 
@@ -380,6 +382,14 @@ class RobotHandDatasetSAPIENViewer(HandDatasetSAPIENViewer):
         # for i, (min_val, max_val) in enumerate(ranges):
         #     print(f"Dimension {i}: min = {min_val:.4f}, max = {max_val:.4f}")
 
+        # Print joint names for each robot
+        cprint("\n[INFO] Saved robot_pose joint names:", "cyan")
+        for robot_idx, robot in enumerate(self.robots):
+            sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
+            cprint(f"Robot {robot_idx} ({self.robot_names[robot_idx]}):", "yellow")
+            for joint_idx, joint_name in enumerate(sapien_joint_names):
+                print(f"  Joint {joint_idx}: {joint_name}")
+        
         # store as a dict
         pose = {
             # target object

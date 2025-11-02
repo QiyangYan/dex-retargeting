@@ -124,11 +124,13 @@ class PositionOptimizer(Optimizer):
         target_link_human_indices: np.ndarray,
         huber_delta=0.02,
         norm_delta=4e-3,
+        canonical_frame: Optional[List[List[float]]] = None,
     ):
         super().__init__(robot, target_joint_names, target_link_human_indices)
         self.body_names = target_link_names
         self.huber_loss = torch.nn.SmoothL1Loss(beta=huber_delta)
         self.norm_delta = norm_delta
+        self.canonical_frame = canonical_frame
 
         # Sanity check and cache link indices
         self.target_link_indices = self.get_link_indices(target_link_names)
@@ -213,6 +215,7 @@ class VectorOptimizer(Optimizer):
         huber_delta=0.02,
         norm_delta=4e-3,
         scaling=1.0,
+        canonical_frame: Optional[List[List[float]]] = None,
     ):
         super().__init__(robot, target_joint_names, target_link_human_indices)
         self.origin_link_names = target_origin_link_names
@@ -220,6 +223,7 @@ class VectorOptimizer(Optimizer):
         self.huber_loss = torch.nn.SmoothL1Loss(beta=huber_delta, reduction="mean")
         self.norm_delta = norm_delta
         self.scaling = scaling
+        self.canonical_frame = canonical_frame
 
         # Computation cache for better performance
         # For one link used in multiple vectors, e.g. hand palm, we do not want to compute it multiple times
@@ -237,6 +241,9 @@ class VectorOptimizer(Optimizer):
         self.computed_link_indices = self.get_link_indices(self.computed_link_names)
 
         self.opt.set_ftol_abs(1e-6)
+        # self.opt.set_maxeval(100000)
+        # self.opt.set_ftol_abs(1e-11)
+
 
     def get_objective_function(
         self, target_vector: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray

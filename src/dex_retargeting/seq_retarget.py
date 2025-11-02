@@ -32,6 +32,8 @@ class SeqRetargeting:
         self.last_qpos = joint_limits.mean(1)[self.optimizer.idx_pin2target].astype(
             np.float32
         )
+        self.mean_qpos = joint_limits.mean(1)[self.optimizer.idx_pin2target].astype(np.float32)
+        # self.last_qpos[:6] = joint_limits[:, 1][self.optimizer.idx_pin2target].astype(np.float32)[:6]
         self.accumulated_time = 0
         self.num_retargeting = 0
 
@@ -108,13 +110,13 @@ class SeqRetargeting:
 
         self.is_warm_started = True
 
-    def retarget(self, ref_value, fixed_qpos=np.array([])):
+    def retarget(self, ref_value, fixed_qpos=np.array([]), last_qpos=None):
         tic = time.perf_counter()
         qpos = self.optimizer.retarget(
             ref_value=ref_value.astype(np.float32),
             fixed_qpos=fixed_qpos.astype(np.float32),
             last_qpos=np.clip(
-                self.last_qpos, self.joint_limits[:, 0], self.joint_limits[:, 1]
+                self.last_qpos if last_qpos is None else last_qpos, self.joint_limits[:, 0], self.joint_limits[:, 1]
             ),
         )
         self.accumulated_time += time.perf_counter() - tic

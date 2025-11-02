@@ -243,7 +243,6 @@ class RobotHandDatasetSAPIENViewer_IMG(HandDatasetSAPIENViewer):
                 ) 
             qpos = retargeting.retarget(ref_value)[retarget2sapien] # (18, )
             # qpos[1] += 0.8  # Set the root position to zero
-
             '''Vector retargeting for finger'''
             retargeting_type = self.vector_retargeting.optimizer.retargeting_type
             indices = self.vector_retargeting.optimizer.target_link_human_indices
@@ -253,7 +252,7 @@ class RobotHandDatasetSAPIENViewer_IMG(HandDatasetSAPIENViewer):
                 joint[task_indices, :] - joint[origin_indices, :]
             ) 
             qpos_vector = self.vector_retargeting.retarget(ref_value)[retarget2sapien]
-            qpos[7:] = qpos_vector[7:] # only replace the finger joints
+            qpos[6:] = qpos_vector[6:] # only replace the finger joints
 
             ''' Set joint '''
             robot.set_qpos(qpos) 

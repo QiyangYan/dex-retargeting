@@ -65,6 +65,9 @@ class RetargetingConfig:
     # Low pass filter
     low_pass_alpha: float = 0.1
 
+    # canonical frame
+    canonical_frame: Optional[List[List[float]]] = None
+
     _TYPE = ["vector", "position", "dexpilot", "fingertip"]
     _DEFAULT_URDF_DIR = "./"
 
@@ -219,6 +222,7 @@ class RetargetingConfig:
                 target_link_human_indices=self.target_link_human_indices,
                 norm_delta=self.normal_delta,
                 huber_delta=self.huber_delta,
+                canonical_frame=self.canonical_frame,
             )
         elif self.type == "vector":
             optimizer = VectorOptimizer(
@@ -230,6 +234,7 @@ class RetargetingConfig:
                 scaling=self.scaling_factor,
                 norm_delta=self.normal_delta,
                 huber_delta=self.huber_delta,
+                canonical_frame=self.canonical_frame,
             )
         elif self.type == "dexpilot":
             optimizer = DexPilotOptimizer(
