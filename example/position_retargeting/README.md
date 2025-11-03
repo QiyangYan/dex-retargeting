@@ -85,3 +85,7 @@ Visualize the retargeting results for multiple robot hands along with the human 
 python visualize_hand_object.py --dexycb-dir=PATH_TO_YOUR_DEXYCB_DIR_ROOT --robots allegro shadow svh
 # Close the viewer window to quit
 ```
+
+``Example 
+
+python visualize_hand_object.py --robots omni --retargeting_type VECTOR     --two_optimizers --second_optimizer_type FINGERTIP --data_id 0
