@@ -18,6 +18,7 @@ from dex_retargeting.constants import RobotName, HandType, RetargetingType
 from dex_retargeting.retargeting_config import RetargetingConfig
 from dex_retargeting.seq_retarget import SeqRetargeting
 
+import sapien
 # For numpy version compatibility
 np.bool = bool
 np.int = int
@@ -207,7 +208,8 @@ def store_retargeted_poses(
     
     # 存储 retargeted poses
     # 格式: {
-    #   data_idx: {
+    #   continuous_idx: {            # 连续索引（从 0 开始），作为字典键
+    #     "original_idx": int,       # 原始数据集索引（用于回溯）
     #     "object_id": str,           # 物体 ID（用于批量加载和标记）
     #     "grasp_type": str,          # 抓取类型
     #     "scale_name": str,          # 缩放名称
@@ -215,9 +217,9 @@ def store_retargeted_poses(
     #     "scene_scale": float,       # 场景缩放因子（标量）
     #     "obj_scale": np.ndarray,    # 物体基础缩放 (3,) [sx, sy, sz]
     #     "shadow_qpos": np.ndarray,  # Shadow Hand 原始 qpos (29,)
-    #     "robot_poses": {            # 各机器人的 retargeted qpos（不包含 y_offset）
-    #       str(robot_name): np.ndarray
-    #     }
+    #     "robot_pose": [            # Omni Hand 的 retargeted qpos 列表（不包含 y_offset）
+    #       np.ndarray,  # Omni Hand qpos
+    #     ]
     #   }
     # }
     retargeted_poses_dict = defaultdict(dict)
@@ -240,8 +242,19 @@ def store_retargeted_poses(
     else:
         object_items = list(object_id_to_indices.items())
     
+    # 查找 omni hand 在 robots 列表中的索引（只需查找一次）
+    omni_idx = None
+    for robot_idx in range(1, len(robots)):  # 跳过 Shadow Hand (idx=0)
+        if robots[robot_idx] == RobotName.omni:
+            omni_idx = robot_idx
+            break
+    
+    if omni_idx is None:
+        cprint(f"[WARNING] Omni hand not found in robots list: {robots}", "yellow")
+    
     # 批量处理每个 object_id
     objects_processed = 0
+    continuous_idx = 0  # 连续索引计数器，从 0 开始
     for object_id, indices in tqdm(object_items, desc="Processing objects"):
         objects_processed += 1
         cprint(f"\n[INFO] Processing object {object_id} ({len(indices)} grasps) [{objects_processed}/{len(object_items)}]...", "cyan")
@@ -261,41 +274,43 @@ def store_retargeted_poses(
                 obj_config = scene_config[object_id_key]
                 obj_scale = np.array(obj_config["scale"])  # [sx, sy, sz]
                 
-                # 存储基本信息
-                retargeted_poses_dict[idx] = {
-                    "object_id": data["object_id"],
+                arr = scene_config[data["object_id"]]['pose']
+                poses = [sapien.Pose(arr[:3].tolist(), arr[3:].tolist())]
+                # 存储基本信息，使用连续索引作为键，并保存原始索引
+                retargeted_poses_dict[continuous_idx] = {
+                    "original_idx": idx,  # 保存原始数据集索引
+                    "target_object_name": data["object_id"],
                     "grasp_type": data["grasp_type"],
                     "scale_name": data["scale_name"],
                     "grasp_idx": data["grasp_idx"],
                     "scene_scale": data["scene_scale"],  # 场景缩放因子（标量）
                     "obj_scale": obj_scale.copy(),  # 物体基础缩放 [sx, sy, sz]
+                    "target_pose_world": poses,
                     "shadow_qpos": grasp_qpos.copy(),  # Shadow Hand 原始 qpos
-                    "robot_poses": {},  # 存储每个机器人的 retargeted qpos
+                    "robot_pose": [],  # 存储 Omni Hand 的 retargeted qpos 列表
                 }
                 
-                # 对每个目标机器人进行 retargeting
-                for robot_idx in range(1, len(robots)):  # 跳过 Shadow Hand (idx=0)
-                    robot_name = robots[robot_idx]
-                    
+                # 只对 omni hand 进行 retargeting
+                if omni_idx is not None:
                     # 执行 retargeting（不包含 y_offset）
                     retargeted_qpos = retarget_shadow_to_robot_no_offset(
-                        viewer, shadow_qpos, robot_idx
+                        viewer, shadow_qpos, omni_idx
                     )
                     
                     if retargeted_qpos is not None:
-                        retargeted_poses_dict[idx]["robot_poses"][str(robot_name)] = retargeted_qpos.copy()
-                        cprint(f"  [DEBUG] Retargeted to {robot_name}: qpos shape {retargeted_qpos.shape}", "white")
+                        retargeted_poses_dict[continuous_idx]["robot_pose"].append(retargeted_qpos.copy())
+                        cprint(f"  [DEBUG] Retargeted to omni: qpos shape {retargeted_qpos.shape}", "white")
                     else:
-                        cprint(f"  [WARNING] Failed to retarget to {robot_name}", "yellow")
+                        cprint(f"  [WARNING] Failed to retarget to omni", "yellow")
                 
                 # 如果可视化，加载物体和手并渲染
                 if visualize:
                     viewer.load_object(data)
                     viewer.set_shadow_qpos(grasp_qpos, robot_idx=0, y_offset=0.0)
-                    for robot_idx in range(1, len(robots)):
-                        retargeted_qpos = retargeted_poses_dict[idx]["robot_poses"].get(str(robots[robot_idx]))
-                        if retargeted_qpos is not None:
-                            viewer.robots[robot_idx].set_qpos(retargeted_qpos.astype(np.float32))
+                    # 设置 omni hand 的 qpos
+                    if omni_idx is not None and len(retargeted_poses_dict[continuous_idx]["robot_pose"]) > 0:
+                        omni_qpos = retargeted_poses_dict[continuous_idx]["robot_pose"][0]
+                        viewer.robots[omni_idx].set_qpos(omni_qpos.astype(np.float32))
                     
                     # 创建关节位置标记（使用 retargeting 中实际使用的关节索引）
                     joint_positions_world = viewer._compute_shadow_joint_positions(shadow_qpos)
@@ -369,10 +384,14 @@ def store_retargeted_poses(
                             viewer.scene.update_render()
                             viewer.camera.take_picture()
                     
+                    # 成功处理后递增连续索引
+                    continuous_idx += 1
+                    
             except Exception as e:
                 cprint(f"[ERROR] Failed to process data {idx}: {e}", "red")
                 import traceback
                 traceback.print_exc()
+                # 处理失败时不递增索引，跳过该数据
                 continue
         
         # 检查是否达到最大物体数量限制
@@ -390,7 +409,7 @@ def store_retargeted_poses(
 
         # DEBUG
         # print("retargeted_poses_dict", retargeted_poses_dict[0]["shadow_qpos"])
-        # print("retargeted_poses_dict", retargeted_poses_dict[0]["robot_poses"])
+        # print("retargeted_poses_dict", retargeted_poses_dict[0]["robot_pose"])
 
         np.save(save_path, result_dict)
         cprint(f"\n[INFO] Saved {len(result_dict)} retargeted poses to {save_path}", "green")
