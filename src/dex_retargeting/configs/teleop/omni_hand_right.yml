@@ -28,7 +28,7 @@ retargeting:
     "pinky_distal"
   ]
 
-  scaling_factor: 0.9 # 1.4 for mano to omni, 0.9 for shadow to omni
+  scaling_factor: 1.4 # 1.4 for mano to omni, 0.9 for shadow to omni
   
   target_link_human_indices: [ [ 0, 0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8, 12, 12, 16 ], [ 4, 8, 12, 16, 20, 8, 12, 16, 20, 12, 16, 20, 16, 20, 20] ]
   # target_link_human_indices: [ [ 0, 0, 0, 0, 0], [ 4, 8, 12, 16, 20 ] ]

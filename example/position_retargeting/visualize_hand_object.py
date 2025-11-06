@@ -22,7 +22,7 @@ np.unicode = np.unicode_
 
 
 
-def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: int, img: bool = False, retargeting_type: str = "POSITION", data_id: int = 8, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR"):
+def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: int, img: bool = False, retargeting_type: str = "POSITION", data_id: int = 8, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", subject_id: str = "20200709-subject-01"):
     dataset = DexYCBVideoDataset(data_root, hand_type="right")
     if robots is None:
         viewer = HandDatasetSAPIENViewer(headless=False)
@@ -64,7 +64,7 @@ def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: in
     viewer.render_dexycb_data(sampled_data, fps)
 
 
-def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", data_id: int = 8, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR"):
+def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", data_id: int = 8, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", subject_id: str = "20200709-subject-01"):
     """
     Render the human and robot trajectories for grasping object inside DexYCB dataset.
     The human trajectory is visualized as provided, while the robot trajectory is generated from retargeting
@@ -78,6 +78,7 @@ def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Opt
         data_id: which data to visualize
         two_optimizers: whether to use two optimizers for retargeting
         second_optimizer_type: type of the second optimizer when two_optimizers=True, either "VECTOR", "FINGERTIP", or "DEXPILOT"
+        subject_id: Subject ID string (e.g., "20200709-subject-01" or "20200813-subject-02")
 
     """
     data_root = Path(dexycb_dir).absolute()
@@ -90,7 +91,7 @@ def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Opt
     else:
         print(f"Using DexYCB dir: {data_root}")
 
-    viz_hand_object(robots, data_root, fps, img, retargeting_type, data_id, two_optimizers, second_optimizer_type)
+    viz_hand_object(robots, data_root, fps, img, retargeting_type, data_id, two_optimizers, second_optimizer_type, subject_id)
 
 
 if __name__ == "__main__":

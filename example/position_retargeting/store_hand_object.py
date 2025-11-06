@@ -43,18 +43,18 @@ Isaac range:
 """
 
 
-def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: int, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = False, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = True):
+def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: int, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = True, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = False, subject_id: str = "20200709-subject-01"):
     # Determine headless mode
     if save_grasp_pose:
         headless = True
     elif save_contact_info and not visualize:
         headless = True  # Only headless if saving contact and not visualizing
     else:
-        headless = False
+        headless = not visualize  # Use visualize flag to determine headless mode
 
     dataset = DexYCBVideoDataset(data_root, hand_type="right")
     if robots is None:
-        viewer = HandDatasetSAPIENViewer(headless=False)
+        viewer = HandDatasetSAPIENViewer(headless=headless)
     elif img:
         if retargeting_type not in ["POSITION", "VECTOR", "FINGERTIP", "DEXPILOT"]:
             raise ValueError(f"Unsupported retargeting type: {retargeting_type}")
@@ -86,16 +86,58 @@ def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: in
     
     grasp_pose_dict = defaultdict(dict)
     
-    # If data_id is not specified, process all data
+    # Filter captures by subject_id - verify each capture actually belongs to the specified subject
+    valid_indices = []
+    valid_capture_names = []
+    for i in range(len(dataset)):
+        sampled_data = dataset[i]
+        capture_name = sampled_data["capture_name"]
+        capture_dir = data_root / subject_id / capture_name
+        
+        # Double-check: verify meta.yml exists in this subject directory
+        meta_file = capture_dir / "meta.yml"
+        if capture_dir.exists() and meta_file.exists():
+            valid_indices.append(i)
+            valid_capture_names.append(capture_name)
+        else:
+            # Skip captures that don't belong to the specified subject_id
+            continue
+    
+    if len(valid_indices) == 0:
+        print(f"Warning: No captures found for subject {subject_id}")
+        return
+    
+    print(f"Found {len(valid_indices)} captures for subject {subject_id} (out of {len(dataset)} total)")
+    print(f"Sample capture names: {valid_capture_names[:5]}..." if len(valid_capture_names) > 5 else f"Capture names: {valid_capture_names}")
+    
+    # If data_id is not specified, process all valid data
     if data_id is None:
-        data_indices = range(len(dataset))
-        print(f"Processing all {len(dataset)} data entries...")
+        data_indices = valid_indices
+        print(f"Processing all {len(data_indices)} data entries for subject {subject_id}...")
     else:
+        # Check if requested data_id is valid for this subject
+        if data_id not in valid_indices:
+            print(f"Warning: data_id {data_id} does not belong to subject {subject_id}")
+            print(f"Valid data_ids for subject {subject_id}: {valid_indices[:10]}..." if len(valid_indices) > 10 else f"Valid data_ids: {valid_indices}")
+            return
         data_indices = [data_id]
-        print(f"Processing data entry {data_id}...")
+        print(f"Processing data entry {data_id} for subject {subject_id}...")
     
     for i, sampled_data in enumerate(dataset):
         if i not in data_indices:
+            continue
+        
+        # Verify this capture belongs to the specified subject_id (double-check)
+        capture_name = sampled_data["capture_name"]
+        capture_dir = data_root / subject_id / capture_name
+        meta_file = capture_dir / "meta.yml"
+        if not capture_dir.exists() or not meta_file.exists():
+            print(f"Warning: Skipping capture {capture_name} (does not belong to {subject_id})")
+            continue
+        
+        # Additional verification: capture_name should be in our valid list
+        if capture_name not in valid_capture_names:
+            print(f"Warning: Capture {capture_name} not in valid list for {subject_id}, skipping")
             continue
         
         if True:  # Replace the "if i == data_id:" condition
@@ -110,27 +152,30 @@ def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: in
             # Render based on flags
             if save_grasp_pose or save_contact_info: 
                 grasp_pose = viewer.render_dexycb_data(sampled_data, fps)
-                grasp_pose_dict[i] = grasp_pose
+                # Use capture_name as key to avoid index conflicts between different subjects
+                grasp_pose_dict[capture_name] = grasp_pose
                 
                 # Add contact information if requested
                 if save_contact_info:
                     if use_sapien_contact:
-                        contact_info = detect_contact_sapien(viewer, sampled_data, data_root)
+                        contact_info = detect_contact_sapien(viewer, sampled_data, data_root, subject_id)
                     else:
-                        contact_info = detect_contact_for_last_frame(sampled_data, data_root)
+                        contact_info = detect_contact_for_last_frame(sampled_data, data_root, subject_id)
                     
                     # Only add the 21-dim contact labels array to the grasp_pose_dict
                     if "error" not in contact_info:
-                        grasp_pose_dict[i]["contact_labels"] = contact_info["contact_labels"]
-                        print(f"Contact detection completed for data {i}")
+                        grasp_pose_dict[capture_name]["contact_labels"] = contact_info["contact_labels"]
+                        print(f"Contact detection completed for capture {capture_name}")
                     else:
-                        print(f"Contact detection failed for data {i}: {contact_info['error']}")
+                        print(f"Contact detection failed for capture {capture_name}: {contact_info['error']}")
             elif visualize:
-                # Visualize if requested
-                viewer.render_dexycb_data(sampled_data, fps)
+                # Visualize if requested, but also collect data so user can save if desired
+                grasp_pose = viewer.render_dexycb_data(sampled_data, fps)
+                # Use capture_name as key to avoid index conflicts between different subjects
+                grasp_pose_dict[capture_name] = grasp_pose
 
-    # save dict in npy format with both grasp poses and contact labels (if requested)
-    if save_grasp_pose or save_contact_info:
+    # save dict in npy format with both grasp poses and contact labels (if requested or if data was collected)
+    if save_grasp_pose or save_contact_info or len(grasp_pose_dict) > 0:
         name = input("Enter the name for the file (without extension): ")
         save_path = data_root / f"grasp_poses_{name}.npy"
         np.save(save_path, dict(grasp_pose_dict))
@@ -140,7 +185,7 @@ def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: in
             print(f"Grasp poses saved to {save_path}")
 
 
-def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
+def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path, subject_id: str = "20200709-subject-01") -> dict:
     """
     Detect contact using SAPIEN physics engine.
     
@@ -148,6 +193,7 @@ def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
         viewer: SAPIEN viewer with scene and loaded objects
         sampled_data: Data from DexYCB dataset
         data_root: Root directory of DexYCB dataset
+        subject_id: Subject ID string (e.g., "20200709-subject-01" or "20200813-subject-02")
     
     Returns:
         Dictionary containing contact information
@@ -161,7 +207,7 @@ def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
         
         # Find the target object (the one being manipulated)
         # Use ycb_grasp_ind from meta.yml to identify which object is being grasped
-        capture_dir = data_root / "20200709-subject-01" / capture_name
+        capture_dir = data_root / subject_id / capture_name
         meta_file = capture_dir / "meta.yml"
         
         import yaml
@@ -179,7 +225,7 @@ def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
         target_object_id = ycb_ids[target_object_idx]
         
         # Load labels for the last frame to get joint positions AND object pose
-        capture_dir = data_root / "20200709-subject-01" / capture_name
+        capture_dir = data_root / subject_id / capture_name
         camera_dirs = [d for d in capture_dir.iterdir() if d.is_dir() and d.name.startswith("8")]
         
         if not camera_dirs:
@@ -280,13 +326,14 @@ def detect_contact_sapien(viewer, sampled_data: dict, data_root: Path) -> dict:
         return {"error": str(e)}
 
 
-def detect_contact_for_last_frame(sampled_data: dict, data_root: Path) -> dict:
+def detect_contact_for_last_frame(sampled_data: dict, data_root: Path, subject_id: str = "20200709-subject-01") -> dict:
     """
     Detect contact information for the last frame of the sequence.
     
     Args:
         sampled_data: Data from DexYCB dataset
         data_root: Root directory of DexYCB dataset
+        subject_id: Subject ID string (e.g., "20200709-subject-01" or "20200813-subject-02")
     
     Returns:
         Dictionary containing contact information
@@ -316,7 +363,7 @@ def detect_contact_for_last_frame(sampled_data: dict, data_root: Path) -> dict:
             return {"error": "Mesh not found"}
         
         # Load labels for the last frame to get joint positions
-        capture_dir = data_root / "20200709-subject-01" / capture_name
+        capture_dir = data_root / subject_id / capture_name
         camera_dirs = [d for d in capture_dir.iterdir() if d.is_dir() and d.name.startswith("8")]
         
         if not camera_dirs:
@@ -393,7 +440,7 @@ def detect_contact_for_last_frame(sampled_data: dict, data_root: Path) -> dict:
         return {"error": str(e)}
 
 
-def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = False, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = True):
+def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = True, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = False, subject_id: str = "20200709-subject-01"):
     """
     Render the human and robot trajectories for grasping object inside DexYCB dataset.
     The human trajectory is visualized as provided, while the robot trajectory is generated from retargeting
@@ -411,6 +458,7 @@ def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Opt
         save_contact_info: whether to save contact information for MANO joints
         use_sapien_contact: whether to use SAPIEN physics-based contact detection (True) or geometric method (False)
         visualize: whether to show visualization window (True) or run headless (False)
+        subject_id: Subject ID string (e.g., "20200709-subject-01" or "20200813-subject-02")
 
     """
     data_root = Path(dexycb_dir).absolute()
@@ -424,7 +472,7 @@ def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Opt
     else:
         print(f"Using DexYCB dir: {data_root}")
 
-    viz_hand_object(robots, data_root, fps, img, retargeting_type, save_grasp_pose, data_id, two_optimizers, second_optimizer_type, save_contact_info, use_sapien_contact, visualize)
+    viz_hand_object(robots, data_root, fps, img, retargeting_type, save_grasp_pose, data_id, two_optimizers, second_optimizer_type, save_contact_info, use_sapien_contact, visualize, subject_id)
 
 
 if __name__ == "__main__":

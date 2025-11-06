@@ -88,4 +88,21 @@ python visualize_hand_object.py --dexycb-dir=PATH_TO_YOUR_DEXYCB_DIR_ROOT --robo
 
 ``Example 
 
-python visualize_hand_object.py --robots omni --retargeting_type VECTOR     --two_optimizers --second_optimizer_type FINGERTIP --data_id 0
+Tips:
+1. Modify scaling factor in 'dex_retargeting/configs/offline/omni_hand_right_fingertip.yml' and other yml used
+
+Command: ycb to omni
+
+python visualize_hand_object.py --robots omni --retargeting_type VECTOR --two_optimizers --second_optimizer_type FINGERTIP --data_id 0 --subject-id "20200813-subject-02"
+
+python store_hand_object.py --robots omni --retargeting_type VECTOR --two_optimizers --second_optimizer_type FINGERTIP --subject-id "20200813-subject-02"
+
+Command: dexonomy to omni
+python store_dexonomy_retarget.py   --robots shadow_no_wrist omni   --retargeting-type VECTOR --two_optimizers --second_optimizer_type FINGERTIP --max_objects 1
+
+python visualize_dexonomy_grasp.py \
+    --robots shadow_no_wrist omni \
+    --retargeting_type vector \
+    --two_optimizers \
+    --second_optimizer_type FINGERTIP \
+    --data_idx 0
