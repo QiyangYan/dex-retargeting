@@ -43,7 +43,7 @@ python tools/contact_map/visualize_dexonomy_grasp.py \
     --data_idx 0 \
     --contact_map_path /path/to/grasp_poses_retargeted_xxx.npy \
     --contact_map_idx 0 \
-    --show_object_points True
+    --show_object_points
 ```
 
 **效果：**

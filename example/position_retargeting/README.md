@@ -106,3 +106,6 @@ python visualize_dexonomy_grasp.py \
     --two_optimizers \
     --second_optimizer_type FINGERTIP \
     --data_idx 0
+
+
+python store_dexonomy_retarget.py --dataset-type bodex --robots shadow_no_wrist omni --dexonomy-dir /home/guizhewei/guizhewei/bodex_dataset --retargeting_type VECTOR --two_optimizers --second_optimizer_type FINGERTIP --data_id_start 0 --data_id_end 3 (--visualize)

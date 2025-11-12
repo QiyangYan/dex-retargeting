@@ -1,20 +1,19 @@
-from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-import copy
 import numpy as np
-import sapien
+from sklearn.base import defaultdict
 import tyro
 
 from dataset import DexYCBVideoDataset
 from dex_retargeting.constants import RobotName, HandType, RetargetingType
 from dex_retargeting.retargeting_config import RetargetingConfig
 from hand_robot_viewer import RobotHandDatasetSAPIENViewer
-from hand_viewer import HandDatasetSAPIENViewer, compute_smooth_shading_normal_np
+from hand_viewer import HandDatasetSAPIENViewer
 from hand_robot_viewer_img import RobotHandDatasetSAPIENViewer_IMG
 from contact_detection import detect_contact_combined, load_object_mesh, analyze_contact_results
 from contact_detection_sapien import detect_contact_in_viewer, analyze_contact_results as analyze_sapien_results, get_contact_summary
+import copy
 
 # For numpy version compatibility
 np.bool = bool
@@ -44,308 +43,9 @@ Isaac range:
 """
 
 
-MANO_PART_NAMES = ["palm", "thumb", "index", "middle", "ring", "pinky"]
-MANO_PART_NAME_TO_ID = {name: idx for idx, name in enumerate(MANO_PART_NAMES)}
-_MANO_JOINT_TO_PART_ID = np.array(
-    [
-        MANO_PART_NAME_TO_ID["palm"],    # 0 wrist
-        MANO_PART_NAME_TO_ID["thumb"],   # 1 thumb_mcp
-        MANO_PART_NAME_TO_ID["thumb"],   # 2 thumb_pip
-        MANO_PART_NAME_TO_ID["thumb"],   # 3 thumb_dip
-        MANO_PART_NAME_TO_ID["thumb"],   # 4 thumb_tip
-        MANO_PART_NAME_TO_ID["index"],   # 5 index_mcp
-        MANO_PART_NAME_TO_ID["index"],   # 6 index_pip
-        MANO_PART_NAME_TO_ID["index"],   # 7 index_dip
-        MANO_PART_NAME_TO_ID["index"],   # 8 index_tip
-        MANO_PART_NAME_TO_ID["middle"],  # 9 middle_mcp
-        MANO_PART_NAME_TO_ID["middle"],  # 10 middle_pip
-        MANO_PART_NAME_TO_ID["middle"],  # 11 middle_dip
-        MANO_PART_NAME_TO_ID["middle"],  # 12 middle_tip
-        MANO_PART_NAME_TO_ID["ring"],    # 13 ring_mcp
-        MANO_PART_NAME_TO_ID["ring"],    # 14 ring_pip
-        MANO_PART_NAME_TO_ID["ring"],    # 15 ring_dip
-        MANO_PART_NAME_TO_ID["ring"],    # 16 ring_tip
-        MANO_PART_NAME_TO_ID["pinky"],   # 17 little_mcp
-        MANO_PART_NAME_TO_ID["pinky"],   # 18 little_pip
-        MANO_PART_NAME_TO_ID["pinky"],   # 19 little_dip
-        MANO_PART_NAME_TO_ID["pinky"],   # 20 little_tip
-    ],
-    dtype=np.int64,
-)
-
-
-def _assign_mano_part_ids(vertices: np.ndarray, joints: np.ndarray) -> np.ndarray:
-    if vertices.size == 0 or joints.size == 0:
-        return np.zeros((vertices.shape[0],), dtype=np.int64)
-    diff = vertices[:, None, :] - joints[None, :, :]
-    dist_sq = np.sum(diff * diff, axis=2)
-    nearest_joint = np.argmin(dist_sq, axis=1)
-    return _MANO_JOINT_TO_PART_ID[nearest_joint]
-
-
-def _sample_indices(total: int, desired: int) -> np.ndarray:
-    if total <= 0:
-        return np.zeros((0,), dtype=np.int64)
-    desired = max(0, int(desired))
-    if desired == 0:
-        return np.arange(total, dtype=np.int64)
-    if total >= desired:
-        return np.random.choice(total, desired, replace=False)
-    return np.random.choice(total, desired, replace=True)
-
-
-def _prepare_hand_surface_points(
-    viewer,
-    hand_pose_frame: np.ndarray,
-    num_samples: int = 2000,
-):
-    vertex, joint = viewer._compute_hand_geometry(hand_pose_frame)
-    if vertex is None or joint is None:
-        return None
-
-    normals = compute_smooth_shading_normal_np(vertex, viewer.mano_face)
-    part_ids = _assign_mano_part_ids(vertex, joint)
-
-    if num_samples is not None and num_samples > 0:
-        indices = _sample_indices(len(vertex), num_samples)
-        vertex = vertex[indices]
-        normals = normals[indices]
-        part_ids = part_ids[indices]
-
-    return vertex, normals, part_ids
-
-
-def _get_target_object_info(sampled_data: dict, data_root: Path, subject_id: str):
-    capture_name = sampled_data.get("capture_name")
-    capture_dir = data_root / subject_id / capture_name
-    meta_file = capture_dir / "meta.yml"
-    if not meta_file.exists():
-        raise FileNotFoundError(f"meta.yml not found for capture {capture_name}")
-
-    import yaml
-
-    with meta_file.open("r") as f:
-        meta = yaml.safe_load(f)
-
-    ycb_ids = sampled_data["ycb_ids"]
-    grasp_ind = meta.get("ycb_grasp_ind", 0)
-    if not isinstance(grasp_ind, int):
-        grasp_ind = 0
-    if grasp_ind >= len(ycb_ids) or grasp_ind < 0:
-        print(
-            f"Warning: ycb_grasp_ind ({grasp_ind}) invalid for capture {capture_name}, defaulting to 0"
-        )
-        grasp_ind = 0
-    target_object_id = ycb_ids[grasp_ind]
-    return grasp_ind, target_object_id, meta
-
-
-def _sample_object_point_cloud(
-    mesh_path: str,
-    object_pose_frame: np.ndarray,
-    camera_pose: sapien.Pose,
-    num_samples: int = 2048,
-):
-    try:
-        import trimesh
-    except ImportError as exc:
-        raise RuntimeError(
-            "trimesh is required for computing contact maps. Please install trimesh."
-        ) from exc
-
-    mesh = trimesh.load(mesh_path, force="mesh")
-    if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
-
-    base_sample_count = max(num_samples * 2, len(mesh.vertices))
-    surface_points, face_indices = trimesh.sample.sample_surface(
-        mesh, count=max(base_sample_count, num_samples)
-    )
-    face_normals = mesh.face_normals[face_indices]
-
-    pose_camera = sapien.Pose(object_pose_frame[4:], object_pose_frame[:4])
-    pose_world = camera_pose * pose_camera
-    transform = pose_world.to_transformation_matrix()
-
-    homogeneous_points = np.hstack(
-        [surface_points, np.ones((surface_points.shape[0], 1))]
-    )
-    points_world = (transform @ homogeneous_points.T).T[:, :3]
-    rotation = transform[:3, :3]
-    normals_world = (rotation @ face_normals.T).T
-    normals_world /= np.linalg.norm(normals_world, axis=1, keepdims=True) + 1e-8
-
-    indices = _sample_indices(points_world.shape[0], num_samples)
-    return points_world[indices], normals_world[indices]
-
-
-def _compute_contact_map_on_object(
-    hand_surface_points: np.ndarray,
-    hand_surface_normals: np.ndarray,
-    object_point_cloud: np.ndarray,
-    object_normal_cloud: np.ndarray,
-    contact_threshold: float = 0.02,
-    use_torch: bool = True,
-) -> np.ndarray:
-    if hand_surface_points.size == 0 or object_point_cloud.size == 0:
-        return np.zeros((object_point_cloud.shape[0],), dtype=np.float32)
-
-    logistic_scale = 10.0 / max(contact_threshold, 1e-4)
-
-    if use_torch:
-        try:
-            import torch  # type: ignore
-        except ImportError:
-            print("[WARNING] Torch not available, falling back to NumPy contact map.")
-            use_torch = False
-
-    if use_torch:
-        hand_points = torch.from_numpy(hand_surface_points).float()
-        hand_normals = torch.from_numpy(hand_surface_normals).float()
-        obj_points = torch.from_numpy(object_point_cloud).float()
-
-        obj_expanded = obj_points.unsqueeze(0).unsqueeze(1)
-        hand_expanded = hand_points.unsqueeze(0).unsqueeze(2)
-        hand_normals_expanded = hand_normals.unsqueeze(0).unsqueeze(2)
-
-        hand_obj_dist = (obj_expanded - hand_expanded).norm(dim=3)
-        hand_obj_align = (
-            (obj_expanded - hand_expanded) * hand_normals_expanded
-        ).sum(dim=3)
-        hand_obj_align = hand_obj_align / (hand_obj_dist + 1e-5)
-        hand_obj_align_dist = hand_obj_dist * torch.exp(
-            2 * (1 - torch.abs(hand_obj_align))
-        )
-
-        contact_dist = torch.sqrt(hand_obj_align_dist.min(dim=1)[0])
-        contact_value = 1 - 2 * (torch.sigmoid(logistic_scale * contact_dist) - 0.5)
-        return contact_value.squeeze(0).cpu().numpy().astype(np.float32)
-
-    # NumPy fallback
-    contact_values = np.zeros(object_point_cloud.shape[0], dtype=np.float32)
-    for i, obj_point in enumerate(object_point_cloud):
-        diffs = hand_surface_points - obj_point[None, :]
-        dists = np.linalg.norm(diffs, axis=1)
-        aligns = np.sum((obj_point[None, :] - hand_surface_points) * hand_surface_normals, axis=1) / (
-            dists + 1e-5
-        )
-        align_dists = dists * np.exp(2 * (1 - np.abs(aligns)))
-        min_dist = np.sqrt(np.min(align_dists))
-        contact_values[i] = 1 - 2 * (1 / (1 + np.exp(-logistic_scale * min_dist)) - 0.5)
-    return contact_values.astype(np.float32)
-
-
-def compute_contact_map_for_sample(
-    viewer,
-    sampled_data: dict,
-    data_root: Path,
-    subject_id: str,
-    hand_surface_sample_num: int = 2000,
-    object_surface_sample_num: int = 2048,
-    contact_threshold: float = 0.02,
-    use_torch: bool = True,
-):
-    try:
-        target_object_idx, target_object_id, _ = _get_target_object_info(
-            sampled_data, data_root, subject_id
-        )
-    except Exception as e:
-        print(f"Error reading target object info: {e}")
-        return {"error": str(e)}
-
-    hand_pose = sampled_data["hand_pose"]
-    object_pose = sampled_data["object_pose"]
-
-    if len(hand_pose) == 0 or len(object_pose) == 0:
-        return {"error": "Empty hand or object pose sequence"}
-
-    last_frame = len(hand_pose) - 1
-    hand_surface = _prepare_hand_surface_points(
-        viewer, hand_pose[last_frame], hand_surface_sample_num
-    )
-
-    if hand_surface is None:
-        return {"error": "Hand geometry unavailable for contact map computation"}
-
-    hand_surface_points, hand_surface_normals, hand_surface_part_ids = hand_surface
-
-    try:
-        object_point_cloud, object_normal_cloud = _sample_object_point_cloud(
-            sampled_data["object_mesh_file"][target_object_idx],
-            object_pose[last_frame, target_object_idx],
-            viewer.camera_pose,
-            object_surface_sample_num,
-        )
-    except Exception as e:
-        print(f"Error sampling object point cloud: {e}")
-        return {"error": str(e)}
-
-    contact_map_object = _compute_contact_map_on_object(
-        hand_surface_points,
-        hand_surface_normals,
-        object_point_cloud,
-        object_normal_cloud,
-        contact_threshold=contact_threshold,
-        use_torch=use_torch,
-    )
-
-    contact_map_object_parts = np.zeros(
-        (len(MANO_PART_NAMES), contact_map_object.shape[0]), dtype=np.float32
-    )
-    for part_idx, part_name in enumerate(MANO_PART_NAMES):
-        mask = hand_surface_part_ids == part_idx
-        if np.count_nonzero(mask) == 0:
-            continue
-        part_contact = _compute_contact_map_on_object(
-            hand_surface_points[mask],
-            hand_surface_normals[mask],
-            object_point_cloud,
-            object_normal_cloud,
-            contact_threshold=contact_threshold,
-            use_torch=use_torch,
-        )
-        contact_map_object_parts[part_idx] = part_contact.astype(np.float32)
-
-    return {
-        "target_object_idx": int(target_object_idx),
-        "target_object_id": int(target_object_id),
-        "last_frame": int(last_frame),
-        "contact_threshold": float(contact_threshold),
-        "hand_surface_points": hand_surface_points.astype(np.float32),
-        "hand_surface_normals": hand_surface_normals.astype(np.float32),
-        "hand_surface_part_ids": hand_surface_part_ids.astype(np.int32),
-        "object_point_cloud": object_point_cloud.astype(np.float32),
-        "object_normal_cloud": object_normal_cloud.astype(np.float32),
-        "contact_map_object": contact_map_object.astype(np.float32),
-        "contact_map_object_parts": contact_map_object_parts,
-        "contact_map_object_part_names": np.array(
-            MANO_PART_NAMES, dtype=object
-        ),
-    }
-
-
-def viz_hand_object(
-    robots: Optional[Tuple[RobotName]],
-    data_root: Path,
-    fps: int,
-    img: bool = False,
-    retargeting_type: str = "POSITION",
-    save_grasp_pose: bool = True,
-    data_id: Optional[int] = None,
-    two_optimizers: bool = False,
-    second_optimizer_type: str = "VECTOR",
-    save_contact_info: bool = False,
-    use_sapien_contact: bool = True,
-    visualize: bool = False,
-    subject_id: str = "20200709-subject-01",
-    save_contact_map: bool = False,
-    hand_surface_sample_num: int = 2000,
-    object_surface_sample_num: int = 2048,
-    contact_threshold: float = 0.02,
-    contact_map_use_torch: bool = True,
-):
+def viz_hand_object(robots: Optional[Tuple[RobotName]], data_root: Path, fps: int, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = True, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = False, subject_id: str = "20200709-subject-01"):
     # Determine headless mode
-    if save_grasp_pose or (save_contact_map and not visualize):
+    if save_grasp_pose:
         headless = True
     elif save_contact_info and not visualize:
         headless = True  # Only headless if saving contact and not visualizing
@@ -450,55 +150,37 @@ def viz_hand_object(
             viewer.load_object_hand(data)
             
             # Render based on flags
-            needs_render = save_grasp_pose or save_contact_info or save_contact_map or visualize
-            grasp_pose = None
-            if needs_render:
+            if save_grasp_pose or save_contact_info: 
                 grasp_pose = viewer.render_dexycb_data(sampled_data, fps)
+                # Use capture_name as key to avoid index conflicts between different subjects
+                grasp_pose_dict[capture_name] = grasp_pose
+                
+                # Add contact information if requested
+                if save_contact_info:
+                    if use_sapien_contact:
+                        contact_info = detect_contact_sapien(viewer, sampled_data, data_root, subject_id)
+                    else:
+                        contact_info = detect_contact_for_last_frame(sampled_data, data_root, subject_id)
+                    
+                    # Only add the 21-dim contact labels array to the grasp_pose_dict
+                    if "error" not in contact_info:
+                        grasp_pose_dict[capture_name]["contact_labels"] = contact_info["contact_labels"]
+                        print(f"Contact detection completed for capture {capture_name}")
+                    else:
+                        print(f"Contact detection failed for capture {capture_name}: {contact_info['error']}")
+            elif visualize:
+                # Visualize if requested, but also collect data so user can save if desired
+                grasp_pose = viewer.render_dexycb_data(sampled_data, fps)
+                # Use capture_name as key to avoid index conflicts between different subjects
                 grasp_pose_dict[capture_name] = grasp_pose
 
-            # Add contact information if requested
-            if save_contact_info:
-                if use_sapien_contact:
-                    contact_info = detect_contact_sapien(viewer, sampled_data, data_root, subject_id)
-                else:
-                    contact_info = detect_contact_for_last_frame(sampled_data, data_root, subject_id)
-
-                if "error" not in contact_info:
-                    grasp_pose_dict.setdefault(capture_name, {})
-                    grasp_pose_dict[capture_name]["contact_labels"] = contact_info["contact_labels"]
-                    print(f"Contact detection completed for capture {capture_name}")
-                else:
-                    print(f"Contact detection failed for capture {capture_name}: {contact_info['error']}")
-
-            if save_contact_map:
-                contact_map_result = compute_contact_map_for_sample(
-                    viewer=viewer,
-                    sampled_data=sampled_data,
-                    data_root=data_root,
-                    subject_id=subject_id,
-                    hand_surface_sample_num=hand_surface_sample_num,
-                    object_surface_sample_num=object_surface_sample_num,
-                    contact_threshold=contact_threshold,
-                    use_torch=contact_map_use_torch,
-                )
-                if "error" not in contact_map_result:
-                    grasp_pose_dict.setdefault(capture_name, {})
-                    grasp_pose_dict[capture_name].update(contact_map_result)
-                    print(f"Contact map stored for capture {capture_name}")
-                else:
-                    print(f"Contact map computation failed for capture {capture_name}: {contact_map_result['error']}")
-
     # save dict in npy format with both grasp poses and contact labels (if requested or if data was collected)
-    if save_grasp_pose or save_contact_info or save_contact_map or len(grasp_pose_dict) > 0:
+    if save_grasp_pose or save_contact_info or len(grasp_pose_dict) > 0:
         name = input("Enter the name for the file (without extension): ")
         save_path = data_root / f"grasp_poses_{name}.npy"
         np.save(save_path, dict(grasp_pose_dict))
-        if save_contact_info and save_contact_map:
-            print(f"Grasp poses with contact labels and contact maps saved to {save_path}")
-        elif save_contact_info:
+        if save_contact_info:
             print(f"Grasp poses with contact labels saved to {save_path}")
-        elif save_contact_map:
-            print(f"Grasp poses with contact maps saved to {save_path}")
         else:
             print(f"Grasp poses saved to {save_path}")
 
@@ -758,26 +440,7 @@ def detect_contact_for_last_frame(sampled_data: dict, data_root: Path, subject_i
         return {"error": str(e)}
 
 
-def main(
-    dexycb_dir: str = "/home/guizhewei/guizhewei/Dexycb_dataset",
-    robots: Optional[List[RobotName]] = None,
-    fps: int = 10,
-    img: bool = False,
-    retargeting_type: str = "POSITION",
-    save_grasp_pose: bool = True,
-    data_id: Optional[int] = None,
-    two_optimizers: bool = False,
-    second_optimizer_type: str = "VECTOR",
-    save_contact_info: bool = False,
-    use_sapien_contact: bool = True,
-    visualize: bool = False,
-    subject_id: str = "20200709-subject-01",
-    save_contact_map: bool = False,
-    hand_surface_sample_num: int = 2000,
-    object_surface_sample_num: int = 2048,
-    contact_threshold: float = 0.02,
-    contact_map_use_torch: bool = True,
-):
+def main(dexycb_dir: str="/home/guizhewei/guizhewei/Dexycb_dataset", robots: Optional[List[RobotName]] = None, fps: int = 10, img: bool = False, retargeting_type: str = "POSITION", save_grasp_pose: bool = True, data_id: Optional[int] = None, two_optimizers: bool = False, second_optimizer_type: str = "VECTOR", save_contact_info: bool = False, use_sapien_contact: bool = True, visualize: bool = False, subject_id: str = "20200709-subject-01"):
     """
     Render the human and robot trajectories for grasping object inside DexYCB dataset.
     The human trajectory is visualized as provided, while the robot trajectory is generated from retargeting
@@ -796,11 +459,6 @@ def main(
         use_sapien_contact: whether to use SAPIEN physics-based contact detection (True) or geometric method (False)
         visualize: whether to show visualization window (True) or run headless (False)
         subject_id: Subject ID string (e.g., "20200709-subject-01" or "20200813-subject-02")
-        save_contact_map: whether to compute and store contact maps (Dexonomy-style)
-        hand_surface_sample_num: number of hand surface points to sample when computing contact map
-        object_surface_sample_num: number of object surface points to sample when computing contact map
-        contact_threshold: distance threshold parameter for contact map computation
-        contact_map_use_torch: whether to use torch implementation for faster contact map computation
 
     """
     data_root = Path(dexycb_dir).absolute()
@@ -814,26 +472,7 @@ def main(
     else:
         print(f"Using DexYCB dir: {data_root}")
 
-    viz_hand_object(
-        robots,
-        data_root,
-        fps,
-        img,
-        retargeting_type,
-        save_grasp_pose,
-        data_id,
-        two_optimizers,
-        second_optimizer_type,
-        save_contact_info,
-        use_sapien_contact,
-        visualize,
-        subject_id,
-        save_contact_map,
-        hand_surface_sample_num,
-        object_surface_sample_num,
-        contact_threshold,
-        contact_map_use_torch,
-    )
+    viz_hand_object(robots, data_root, fps, img, retargeting_type, save_grasp_pose, data_id, two_optimizers, second_optimizer_type, save_contact_info, use_sapien_contact, visualize, subject_id)
 
 
 if __name__ == "__main__":

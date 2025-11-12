@@ -128,6 +128,7 @@ class SeqRetargeting:
 
         if self.optimizer.adaptor is not None:
             robot_qpos = self.optimizer.adaptor.forward_qpos(robot_qpos)
+        
 
         if self.filter is not None:
             robot_qpos = self.filter.next(robot_qpos)

@@ -17,7 +17,6 @@ import torch.nn.functional as F
 import trimesh
 
 from dexonomy_dataset import DexonomyGraspDataset
-from bodex_dataset import BoDexGraspDataset
 from dexonomy_viewer import DexonomyGraspSAPIENViewer
 from dex_retargeting.constants import RobotName, HandType, RetargetingType
 from dex_retargeting.retargeting_config import RetargetingConfig
@@ -47,30 +46,6 @@ np.object = object
 np.unicode = np.unicode_
 
 
-SHADOWHAND_PART_NAMES = ["palm", "thumb", "index", "middle", "ring", "pinky"]
-SHADOWHAND_PART_NAME_TO_ID = {name: idx for idx, name in enumerate(SHADOWHAND_PART_NAMES)}
-
-
-def categorize_shadowhand_link(link_name: str) -> str:
-    """根据 link 名称判断所属的手部部位（手掌或 5 根手指）"""
-    if not link_name:
-        return "palm"
-    lower_name = link_name.lower()
-    if lower_name.startswith("palm") or lower_name.startswith("hand"):
-        return "palm"
-    if lower_name.startswith("th"):
-        return "thumb"
-    if lower_name.startswith("ff"):
-        return "index"
-    if lower_name.startswith("mf"):
-        return "middle"
-    if lower_name.startswith("rf"):
-        return "ring"
-    if lower_name.startswith("lf"):
-        return "pinky"
-    return "palm"
-
-
 def get_hand_surface_points_from_sapien(
     viewer: DexonomyGraspSAPIENViewer, 
     robot_idx: int = 0,
@@ -88,26 +63,16 @@ def get_hand_surface_points_from_sapien(
     
     Returns:
         hand_surface_points: (N, 3) 手部表面点世界坐标
-        hand_surface_normals: (N, 3) 手部表面法向量（单位向量），如果 return_normals=True，否则返回 None
-        hand_surface_part_ids: (N,) 每个手部表面点所属部位的索引（0-5：palm/thumb/index/middle/ring/pinky）
+        hand_surface_normals: (N, 3) 手部表面法向量（单位向量），如果 return_normals=True
     """
     robot = viewer.robots[robot_idx]
-    robot_actor_name = robot.get_name() if hasattr(robot, "get_name") else getattr(robot, "name", "")
-    use_shadow_categories = robot_actor_name.lower().startswith("shadow")
     all_points = []
     all_normals = []
-    all_categories = []
     
     # 遍历所有 link，提取 collision mesh 的顶点（作为表面点）
     for link in robot.get_links():
         # 获取 link 的世界坐标 pose
         link_pose = link.get_pose()
-        link_name = link.get_name() if hasattr(link, "get_name") else getattr(link, "name", "")
-        if use_shadow_categories:
-            category_name = categorize_shadowhand_link(link_name)
-        else:
-            category_name = "palm"
-        category_id = SHADOWHAND_PART_NAME_TO_ID.get(category_name, SHADOWHAND_PART_NAME_TO_ID["palm"])
         
         # 尝试获取 collision shapes（更可靠）
         collision_shapes = link.get_collision_shapes()
@@ -133,7 +98,6 @@ def get_hand_surface_points_from_sapien(
                     vertices_world = (link_transform @ vertices_homogeneous.T).T[:, :3]
                     
                     all_points.append(vertices_world)
-                    all_categories.append(np.full(len(vertices_world), category_id, dtype=np.int64))
                     
                     # 计算法向量（简单估计：指向外部）
                     if return_normals:
@@ -171,7 +135,6 @@ def get_hand_surface_points_from_sapien(
                 vertices_world = (link_transform @ vertices_homogeneous.T).T[:, :3]
                 
                 all_points.append(vertices_world)
-                all_categories.append(np.full(len(vertices_world), category_id, dtype=np.int64))
                 
                 if return_normals:
                     # 转换法向量（只旋转，不平移）
@@ -232,7 +195,6 @@ def get_hand_surface_points_from_sapien(
                     vertices_world = (link_transform @ vertices_homogeneous.T).T[:, :3]
                     
                     all_points.append(vertices_world)
-                    all_categories.append(np.full(len(vertices_world), category_id, dtype=np.int64))
                     
                     if return_normals:
                         box_normals_array = np.vstack(box_normals)
@@ -244,14 +206,12 @@ def get_hand_surface_points_from_sapien(
     
     if len(all_points) == 0:
         cprint("[WARNING] No surface points extracted from hand!", "yellow")
-        empty_points = np.zeros((0, 3))
-        empty_normals = np.zeros((0, 3)) if return_normals else None
-        empty_categories = np.zeros((0,), dtype=np.int64)
-        return empty_points, empty_normals if return_normals else None, empty_categories
+        if return_normals:
+            return np.zeros((0, 3)), np.zeros((0, 3))
+        return np.zeros((0, 3))
     
     # 合并所有点
     hand_surface_points = np.vstack(all_points)
-    hand_surface_categories = np.concatenate(all_categories) if len(all_categories) > 0 else np.zeros((hand_surface_points.shape[0],), dtype=np.int64)
     
     if return_normals:
         hand_surface_normals = np.vstack(all_normals) if len(all_normals) > 0 else None
@@ -269,11 +229,12 @@ def get_hand_surface_points_from_sapien(
             indices = np.random.choice(len(hand_surface_points), num_samples, replace=True)
         
         hand_surface_points = hand_surface_points[indices]
-        hand_surface_categories = hand_surface_categories[indices]
         if return_normals:
             hand_surface_normals = hand_surface_normals[indices]
     
-    return hand_surface_points, hand_surface_normals if return_normals else None, hand_surface_categories
+    if return_normals:
+        return hand_surface_points, hand_surface_normals
+    return hand_surface_points
 
 
 def robust_compute_rotation_matrix_from_ortho6d(poses):
@@ -327,15 +288,10 @@ def get_hand_surface_points_from_handmodel(
     直接实现 HandModel 的表面点提取逻辑（不导入 HandModel 类）
     与 HandModel.get_surface_points_new() 方法逻辑一致
     
-    采样策略（仅对 shadowhand）：
-    - palm（手掌）总点数：num_samples / 4
-    - 每根手指总点数：3 * num_samples / 20
-    - palm:finger = 5:3
-    - 每个部位的多个 link 平分该部位的点数
+    采样策略：
+    - 第一个有效 link（手掌）：采样 num_samples - (有效link数-1) * per_link_samples 个点
+    - 其他 link（手指等）：各采样 per_link_samples 个点（shadow hand: 64，其他: 128）
     - 最后微调总点数到精确的 num_samples
-    
-    其他机器人：
-    - 保持原有逻辑（固定 per_link_samples）
     
     Args:
         grasp_qpos: (29,) Shadow Hand qpos，包含 [x, y, z, qw, qx, qy, qz, joint_angles...]
@@ -349,7 +305,6 @@ def get_hand_surface_points_from_handmodel(
     Returns:
         hand_surface_points: (N, 3) 手部表面点世界坐标
         hand_surface_normals: (N, 3) 手部表面法向量（单位向量），如果 return_normals=True
-        hand_surface_part_ids: (N,) 每个手部表面点所属部位索引（0-5：palm/thumb/index/middle/ring/pinky）
     """
     try:
         # 默认路径设置
@@ -364,21 +319,11 @@ def get_hand_surface_points_from_handmodel(
         # 检查文件是否存在
         if not Path(urdf_path).exists():
             cprint(f"[WARNING] URDF file not found: {urdf_path}", "yellow")
-            empty_points = np.zeros((0, 3))
-            empty_normals = np.zeros((0, 3)) if return_normals else None
-            empty_categories = np.zeros((0,), dtype=np.int64)
-            if return_normals:
-                return empty_points, empty_normals, empty_categories
-            return empty_points, None, empty_categories
+            return np.zeros((0, 3))
         
         if not Path(mesh_path).exists():
             cprint(f"[WARNING] Mesh path not found: {mesh_path}", "yellow")
-            empty_points = np.zeros((0, 3))
-            empty_normals = np.zeros((0, 3)) if return_normals else None
-            empty_categories = np.zeros((0,), dtype=np.int64)
-            if return_normals:
-                return empty_points, empty_normals, empty_categories
-            return empty_points, None, empty_categories
+            return np.zeros((0, 3))
         
         # 设置设备
         torch_device = torch.device(device if torch.cuda.is_available() else 'cpu')
@@ -409,63 +354,34 @@ def get_hand_surface_points_from_handmodel(
         current_status = robot.forward_kinematics(q_joints)
         
         # 4. 提取每个 link 的表面点和法向量
-        # 先统计有效 link 数量（有 visual 的）和每个部位的 link 数量
+        # 先统计有效 link 数量（有 visual 的）
         valid_links = [link for link in visual.links if len(link.visuals) > 0]
         num_valid_links = len(valid_links)
         
-        # 统计每个部位的 link 数量（仅对 shadowhand）
-        part_link_counts = {part_name: 0 for part_name in SHADOWHAND_PART_NAMES}
+        # 确定每个普通 link 的采样数（根据目标总点数动态调整）
         if robot_name == 'shadowhand':
-            for link in valid_links:
-                category_name = categorize_shadowhand_link(link.name)
-                part_link_counts[category_name] += 1
-        else:
-            # 其他机器人：所有 link 都算作 palm
-            part_link_counts["palm"] = num_valid_links
-        
-        # 根据 palm:finger = 5:3 的比例分配点数
-        # palm_samples + 5 * finger_samples = num_samples
-        # 5k + 5 * 3k = 20k = num_samples
-        # k = num_samples / 20
-        # palm_samples = 5 * num_samples / 20 = num_samples / 4
-        # finger_samples = 3 * num_samples / 20 = 3 * num_samples / 20
-        if robot_name == 'shadowhand':
-            palm_total_samples = int(num_samples / 4)  # palm 总点数
-            finger_total_samples = int(3 * num_samples / 20)  # 每根手指总点数
-            
-            # 计算每个部位的每个 link 的采样数
-            part_per_link_samples = {}
-            for part_name in SHADOWHAND_PART_NAMES:
-                link_count = part_link_counts[part_name]
-                if link_count == 0:
-                    part_per_link_samples[part_name] = 0
-                elif part_name == "palm":
-                    # palm 的所有 link 平分 palm_total_samples
-                    part_per_link_samples[part_name] = max(1, palm_total_samples // link_count) if link_count > 0 else 0
-                else:
-                    # 每根手指的所有 link 平分 finger_total_samples
-                    part_per_link_samples[part_name] = max(1, finger_total_samples // link_count) if link_count > 0 else 0
-            
-            cprint(f"[INFO] Part sampling strategy (palm:finger=5:3):", "cyan")
-            cprint(f"  Palm total: {palm_total_samples} points across {part_link_counts['palm']} links ({part_per_link_samples['palm']} per link)", "white")
-            cprint(f"  Each finger total: {finger_total_samples} points", "white")
-            for part_name in SHADOWHAND_PART_NAMES[1:]:  # 跳过 palm
-                if part_link_counts[part_name] > 0:
-                    cprint(f"  {part_name}: {finger_total_samples} points across {part_link_counts[part_name]} links ({part_per_link_samples[part_name]} per link)", "white")
-        else:
-            # 其他机器人：保持原有逻辑
             if num_samples <= 2000:
                 per_link_samples = 64
             elif num_samples <= 5000:
                 per_link_samples = 200
             else:
+                # 对于更大的采样数，按比例缩放（5000点对应200，向上线性外推）
                 per_link_samples = int(200 * (num_samples / 5000))
-            part_per_link_samples = {"palm": per_link_samples}
+        else:
+            # 其他机器人：保持原有逻辑
+            per_link_samples = 128
+        
+        # 第一个 link（手掌）采样更多点
+        if num_valid_links > 0:
+            first_link_samples = num_samples - (num_valid_links - 1) * per_link_samples
+            first_link_samples = max(first_link_samples, per_link_samples)  # 至少采样 per_link_samples 个点
+        else:
+            first_link_samples = per_link_samples
         
         surface_points_list = []
         surface_normals_list = []
-        surface_category_list = []
         
+        valid_link_idx = 0  # 有效 link 的索引
         for i_link, link in enumerate(visual.links):
             # 跳过没有 visual 的 link
             if len(link.visuals) == 0:
@@ -506,18 +422,16 @@ def get_hand_surface_points_from_handmodel(
                 rotation = transforms3d.euler.euler2mat(0, 0, 0)
                 translation_link = np.array([[0, 0, 0]])
             
-            # 根据部位分配采样数
-            if robot_name == 'shadowhand':
-                category_name = categorize_shadowhand_link(link.name)
-                sample_count = part_per_link_samples.get(category_name, 0)
+            # 采样表面点（第一个有效 link 采样更多点）
+            if valid_link_idx == 0:
+                # 第一个 link（通常是手掌）
+                sample_count = first_link_samples
             else:
-                sample_count = part_per_link_samples.get("palm", 64)
-            
-            if sample_count <= 0:
-                cprint(f"[WARNING] Link {link.name} has 0 samples, skipping", "yellow")
-                continue
+                # 其他 link
+                sample_count = per_link_samples
             
             pts, pts_face_index = trimesh.sample.sample_surface(mesh=mesh, count=sample_count)
+            valid_link_idx += 1  # 递增有效 link 计数器
             
             # 获取法向量
             if return_normals:
@@ -557,8 +471,7 @@ def get_hand_surface_points_from_handmodel(
                 pts_world = torch.matmul(global_rotation, pts_transformed.transpose(1, 2)).transpose(1, 2) + global_translation.unsqueeze(1)
                 # 应用 hand_scale
                 pts_world = pts_world * hand_scale
-                pts_world_squeezed = pts_world.squeeze(0)  # (N, 3)
-                surface_points_list.append(pts_world_squeezed)
+                surface_points_list.append(pts_world.squeeze(0))  # (N, 3)
                 
                 if return_normals:
                     # 法向量：只应用旋转
@@ -567,48 +480,28 @@ def get_hand_surface_points_from_handmodel(
                     # 归一化
                     pts_normal_world = pts_normal_world / (torch.norm(pts_normal_world, dim=2, keepdim=True) + 1e-8)
                     surface_normals_list.append(pts_normal_world.squeeze(0))  # (N, 3)
-
-                if robot_name == 'shadowhand':
-                    category_name = categorize_shadowhand_link(link.name)
-                else:
-                    category_name = "palm"
-                category_id = SHADOWHAND_PART_NAME_TO_ID.get(category_name, SHADOWHAND_PART_NAME_TO_ID["palm"])
-                surface_category_list.append(torch.full((pts_world_squeezed.shape[0],), category_id, dtype=torch.long, device=torch_device))
         
         # 5. 合并所有 link 的表面点
         if len(surface_points_list) == 0:
             cprint(f"[WARNING] No surface points extracted from any link", "yellow")
-            empty_points = np.zeros((0, 3))
-            empty_normals = np.zeros((0, 3)) if return_normals else None
-            empty_categories = np.zeros((0,), dtype=np.int64)
             if return_normals:
-                return empty_points, empty_normals, empty_categories
-            return empty_points, None, empty_categories
+                return np.zeros((0, 3)), np.zeros((0, 3))
+            return np.zeros((0, 3))
         
         surface_points = torch.cat(surface_points_list, dim=0)  # (total_N, 3)
-        surface_categories = torch.cat(surface_category_list, dim=0) if len(surface_category_list) > 0 else torch.zeros((surface_points.shape[0],), device=torch_device, dtype=torch.long)
         if return_normals:
             surface_normals = torch.cat(surface_normals_list, dim=0)  # (total_N, 3)
         
-        # 6. 确保精确的点数（微调以匹配目标点数）
-        # 采样策略：palm:finger = 5:3，每个部位的 link 平分该部位的点数
+        # 6. 确保精确的点数（通常已经接近目标，只需微调）
+        # 采样策略：第一个 link 采样 first_link_samples 个，其他 link 各采样 per_link_samples 个
         current_num = surface_points.shape[0]
         cprint(f"[INFO] Extracted {current_num} surface points from {num_valid_links} links (target: {num_samples})", "cyan")
-        
-        # 统计各部位的点数（用于验证比例）
-        if robot_name == 'shadowhand':
-            part_counts = {}
-            for part_idx, part_name in enumerate(SHADOWHAND_PART_NAMES):
-                mask = (surface_categories == part_idx)
-                part_counts[part_name] = int(torch.sum(mask).item())
-            cprint(f"[INFO] Part point counts before adjustment: {part_counts}", "white")
         
         if current_num != num_samples:
             if current_num > num_samples:
                 # 降采样：随机选择
                 indices = torch.randperm(current_num, device=torch_device)[:num_samples]
                 surface_points = surface_points[indices]
-                surface_categories = surface_categories[indices]
                 if return_normals:
                     surface_normals = surface_normals[indices]
                 cprint(f"[INFO] Adjusted from {current_num} to {num_samples} points (downsampled)", "white")
@@ -616,41 +509,20 @@ def get_hand_surface_points_from_handmodel(
                 # 上采样：重复采样
                 indices = torch.randint(0, current_num, (num_samples,), device=torch_device)
                 surface_points = surface_points[indices]
-                surface_categories = surface_categories[indices]
                 if return_normals:
                     surface_normals = surface_normals[indices]
                 cprint(f"[INFO] Adjusted from {current_num} to {num_samples} points (upsampled)", "white")
-        
-        # 验证最终比例（仅对 shadowhand）
-        if robot_name == 'shadowhand':
-            final_part_counts = {}
-            for part_idx, part_name in enumerate(SHADOWHAND_PART_NAMES):
-                mask = (surface_categories == part_idx)
-                final_part_counts[part_name] = int(torch.sum(mask).item())
-            
-            palm_count = final_part_counts.get("palm", 0)
-            finger_counts = [final_part_counts.get(name, 0) for name in SHADOWHAND_PART_NAMES[1:]]
-            avg_finger_count = sum(finger_counts) / len([c for c in finger_counts if c > 0]) if len([c for c in finger_counts if c > 0]) > 0 else 0
-            
-            if avg_finger_count > 0:
-                actual_ratio = palm_count / avg_finger_count
-                target_ratio = 5.0 / 3.0
-                cprint(f"[INFO] Final part point counts: {final_part_counts}", "green")
-                cprint(f"[INFO] Palm:Finger ratio: {actual_ratio:.3f} (target: {target_ratio:.3f})", "green")
-            else:
-                cprint(f"[INFO] Final part point counts: {final_part_counts}", "green")
         
         # 转换为 numpy
         surface_points_np = surface_points.cpu().numpy()  # (N, 3)
         if return_normals:
             surface_normals_np = surface_normals.cpu().numpy()  # (N, 3)
         
-        surface_categories_np = surface_categories.cpu().numpy()
         cprint(f"[SUCCESS] Final: {surface_points_np.shape[0]} surface points", "green")
         
         if return_normals:
-            return surface_points_np, surface_normals_np, surface_categories_np
-        return surface_points_np, None, surface_categories_np
+            return surface_points_np, surface_normals_np
+        return surface_points_np
         
     except Exception as e:
         cprint(f"[ERROR] Failed to extract surface points: {e}", "red")
@@ -713,28 +585,20 @@ def get_object_point_cloud_and_normals(
                     # 标量形式
                     mesh.apply_scale(float(obj_scale))
             
-            # 从 mesh 表面采样点（而不是直接使用顶点）
-            # 如果使用 FPS，先采样大量点，然后 FPS 降采样
-            # 如果不使用 FPS，直接采样到目标数量
-            if use_fps and HAS_PYTORCH3D:
-                # 先采样大量表面点（用于后续 FPS）
-                # 采样数应该是目标数的 3-5 倍，确保有足够的候选点
-                pre_sample_count = max(num_samples * 5, len(mesh.vertices) * 2)
-                pre_sample_count = min(pre_sample_count, 50000)  # 限制最大采样数
-                surface_points, face_indices = trimesh.sample.sample_surface(mesh, count=pre_sample_count)
-                
-                # 获取表面点的法线（使用面的法线）
-                face_normals = mesh.face_normals
-                normals = face_normals[face_indices]
+            # 获取顶点和法线
+            vertices = np.array(mesh.vertices)
+            
+            # 计算顶点法线（如果不存在）
+            if hasattr(mesh, 'vertex_normals') and mesh.vertex_normals is not None:
+                normals = np.array(mesh.vertex_normals)
             else:
-                # 不使用 FPS：直接采样到目标数量
-                surface_points, face_indices = trimesh.sample.sample_surface(mesh, count=num_samples)
-                face_normals = mesh.face_normals
-                normals = face_normals[face_indices]
+                # 使用 trimesh 计算法线
+                mesh.fix_normals()
+                normals = np.array(mesh.vertex_normals)
             
             # 转换到世界坐标系
             obj_transform = obj_pose.to_transformation_matrix()
-            vertices_homogeneous = np.hstack([surface_points, np.ones((len(surface_points), 1))])
+            vertices_homogeneous = np.hstack([vertices, np.ones((len(vertices), 1))])
             vertices_world = (obj_transform @ vertices_homogeneous.T).T[:, :3]
             
             # 转换法线（只旋转，不平移）
@@ -751,9 +615,6 @@ def get_object_point_cloud_and_normals(
             all_normals = []
     else:
         # 方法 2: 尝试从 Actor 的 visual bodies 提取
-        # 注意：方法 2 从 SAPIEN mesh 提取顶点，这些顶点可能集中在边沿
-        # 如果使用 FPS，会在这些顶点之间选择，可能仍然不够均匀
-        # 建议优先使用方法 1（提供 mesh_path）以获得更好的表面采样
         all_vertices = []
         all_normals = []
         
@@ -847,14 +708,13 @@ def get_object_point_cloud_and_normals(
             # 降采样
             if use_fps and HAS_PYTORCH3D:
                 # 使用 FPS (Farthest Point Sampling) 进行均匀采样
-                # 注意：all_vertices 已经是表面采样点（不是顶点），所以 FPS 会在表面点之间选择
-                cprint(f"  [INFO] Using FPS sampling to downsample from {len(all_vertices)} surface points to {num_samples} points", "cyan")
+                cprint(f"  [INFO] Using FPS sampling to downsample from {len(all_vertices)} to {num_samples} points", "cyan")
                 torch_device = torch.device(device if torch.cuda.is_available() else 'cpu')
                 
                 # 转换为 torch tensor
                 vertices_tensor = torch.from_numpy(all_vertices).float().unsqueeze(0).to(torch_device)  # (1, N, 3)
                 
-                # 使用 FPS 采样（从表面采样点中选择最远的点）
+                # 使用 FPS 采样
                 sampled_points, sampled_indices = pytorch3d.ops.sample_farthest_points(
                     vertices_tensor, 
                     K=num_samples,
@@ -867,7 +727,6 @@ def get_object_point_cloud_and_normals(
                 normal_cloud = all_normals[sampled_indices_np]
                 
                 cprint(f"  [INFO] FPS sampling completed: {point_cloud.shape}", "green")
-                cprint(f"  [DEBUG] Point cloud range: min={point_cloud.min(axis=0)}, max={point_cloud.max(axis=0)}", "white")
             else:
                 # 随机采样（原有方法）
                 if use_fps:
@@ -877,12 +736,10 @@ def get_object_point_cloud_and_normals(
                 normal_cloud = all_normals[indices]
         else:
             # 上采样：重复采样
-            cprint(f"  [INFO] Upsampling from {len(all_vertices)} to {num_samples} points", "cyan")
             indices = np.random.choice(len(all_vertices), num_samples, replace=True)
             point_cloud = all_vertices[indices]
             normal_cloud = all_normals[indices]
     else:
-        # 点数正好匹配
         point_cloud = all_vertices
         normal_cloud = all_normals
     
@@ -1069,24 +926,12 @@ def retarget_shadow_to_robot_no_offset(
             second_ref_value = joint_positions[second_task_indices, :] - joint_positions[second_origin_indices, :]
         
         # 使用第一个优化器的结果更新第二个优化器的 last_qpos
-        second = viewer.second_retargeting
-        rtype2 = second.optimizer.retargeting_type
-        idxs2  = second.optimizer.target_link_human_indices
-        if rtype2 in ("POSITION", "FINGERTIP"):
-            ref2 = joint_positions[idxs2, :]
-        else:  # VECTOR / DEXPILOT
-            origin2 = idxs2[0, :]
-            task2   = idxs2[1, :]
-            ref2 = joint_positions[task2, :] - joint_positions[origin2, :]
-
-        # 用“本次 first 的结果”做 second 的初值，而不是写 second.last_qpos
-        second_init = qpos_full[second.optimizer.idx_pin2target]
-        # viewer.second_retargeting.last_qpos = qpos_full[viewer.second_retargeting.optimizer.idx_pin2target]
-
+        viewer.second_retargeting.last_qpos = qpos_full[viewer.second_retargeting.optimizer.idx_pin2target]
+        
         # 使用第二个优化器进行 retargeting
-        qpos_second = viewer.second_retargeting.retarget(second_ref_value, last_qpos=second_init)[viewer.retarget2sapien[robot_idx]]
+        qpos_second = viewer.second_retargeting.retarget(second_ref_value)[viewer.retarget2sapien[robot_idx]]
         qpos = qpos_second  # 使用第二个优化器的结果
-    # import ipdb; ipdb.set_trace()
+    
     # 注意：这里不应用 y_offset，直接返回 qpos
     return qpos.copy()
 
@@ -1108,20 +953,17 @@ def store_retargeted_poses(
     hand_surface_sample_num: int = 2000,
     use_fps_for_object: bool = False,
     visualize_hand_points: bool = False,
-    dataset_type: str = "dexonomy",
-    bodex_envs: Optional[List[str]] = None,
-    visualize_duration: float = 5.0,
 ):
     """
     批量处理 Dexonomy 数据集，存储 Shadow Hand 到其他机器手的 retargeting 结果
     
     Args:
         robots: 目标机器人列表（第一个应该是 Shadow Hand，后续是需要 retarget 的机器人）
-        data_root: 数据集根目录（Dexonomy 或 BoDex）
+        data_root: Dexonomy 数据集根目录
         retargeting_type: retargeting 类型，"POSITION", "VECTOR", "FINGERTIP", 或 "DEXPILOT"
         two_optimizers: 是否使用两个优化器
         second_optimizer_type: 第二个优化器类型
-        grasp_type: 特定抓取类型（仅 Dexonomy 有效，BoDex 将忽略）
+        grasp_type: 特定抓取类型（None 表示所有类型）
         object_ids: 特定物体 ID 列表（None 表示所有物体）
         split: 数据集划分 "train", "test", 或 "all"
         data_id_start: 起始数据索引（None 表示从头开始）
@@ -1132,9 +974,6 @@ def store_retargeted_poses(
         hand_surface_sample_num: 手部表面采样点数（默认 2000）
         use_fps_for_object: 是否使用 FPS (Farthest Point Sampling) 对物体点云进行均匀采样（需要 pytorch3d）
         visualize_hand_points: 是否在 SAPIEN 中可视化手部表面点（需要 visualize=True）
-        dataset_type: "dexonomy" 或 "bodex"
-        bodex_envs: BoDex 数据集环境过滤（例如 ["floating"]），默认为全部
-        visualize_duration: 每个数据样本可视化的时长（秒）
     """
     # 转换 retargeting_type
     if retargeting_type == "POSITION":
@@ -1148,34 +987,20 @@ def store_retargeted_poses(
     else:
         raise ValueError(f"Unsupported retargeting type: {retargeting_type}")
     
-    dataset_type = dataset_type.lower()
-    if dataset_type not in {"dexonomy", "bodex"}:
-        raise ValueError(f"Unsupported dataset_type: {dataset_type}")
-
-    if dataset_type == "dexonomy":
-        cprint("[INFO] Loading Dexonomy dataset...", "green")
-        dataset = DexonomyGraspDataset(
-            data_root=data_root,
-            grasp_type=grasp_type,
-            object_ids=object_ids,
-            split=split,
-        )
-    else:
-        if grasp_type is not None:
-            cprint("[WARNING] grasp_type filtering is ignored for BoDex dataset.", "yellow")
-        cprint("[INFO] Loading BoDex dataset...", "green")
-        dataset = BoDexGraspDataset(
-            data_root=data_root,
-            object_ids=object_ids,
-            split=split,
-            env_types=bodex_envs,
-        )
+    # 加载数据集
+    cprint(f"[INFO] Loading Dexonomy dataset...", "green")
+    dataset = DexonomyGraspDataset(
+        data_root=data_root,
+        grasp_type=grasp_type,
+        object_ids=object_ids,
+        split=split,
+    )
     
     if len(dataset) == 0:
-        cprint(f"[ERROR] Dataset ({dataset_type}) is empty!", "red")
+        cprint(f"[ERROR] Dataset is empty!", "red")
         return
     
-    cprint(f"[INFO] Loaded {len(dataset)} grasp samples from {dataset_type}", "green")
+    cprint(f"[INFO] Loaded {len(dataset)} grasp samples", "green")
     
     # 创建 viewer（headless 模式用于批量处理）
     headless = not visualize
@@ -1259,7 +1084,7 @@ def store_retargeted_poses(
                 # shadow_qpos: pinocchio order - 用于 retargeting 和 pytorch_kinematics (HandModel)
                 # grasp_qpos: sapien order - 用于 SAPIEN viewer
                 shadow_qpos = data["grasp_qpos_pin_order"]  # (29,) pinocchio order
-                grasp_qpos = data["grasp_qpos"]  # (29,) sapien order for dexgraspnet vis
+                grasp_qpos = data["grasp_qpos"]  # (29,) sapien order
                 bodex_qpos = data["grasp_qpos_bodex_order"]  # (29,) bodex original order
                 pk_qpos = data["grasp_pos_pk_order"]  # (29,) pk order
                 # 获取物体的base scale（obj_scale）
@@ -1275,7 +1100,6 @@ def store_retargeted_poses(
                 contact_map = None
                 hand_surface_points = None
                 hand_surface_normals = None
-                hand_surface_part_ids = None
                 object_point_cloud = np.array([])
                 object_normal_cloud = np.array([])
                 try:
@@ -1290,8 +1114,8 @@ def store_retargeted_poses(
                         cprint(f"  [INFO] Using HandModel method to extract hand surface points...", "cyan")
                         try:
                             # 注意：pytorch_kinematics 需要使用 pinocchio order 的 qpos
-                            hand_surface_points, hand_surface_normals, hand_surface_part_ids = get_hand_surface_points_from_handmodel(
-                                grasp_qpos=pk_qpos,  # 使用 pinocchio order (pin_order)
+                            hand_surface_points, hand_surface_normals, _ = get_hand_surface_points_from_handmodel(
+                                grasp_qpos=pk_qpos,  # 使用 pinocchio order (29维)
                                 robot_name='shadowhand',
                                 urdf_path="/home/guizhewei/guizhewei/retarget/dex-retargeting/assets/robots/hands/shadow_hand_no_wrist/shadow_hand_right.urdf",
                                 mesh_path="/home/guizhewei/guizhewei/retarget/dex-retargeting/assets/robots/hands/shadow_hand_no_wrist/meshes/visual",
@@ -1301,7 +1125,7 @@ def store_retargeted_poses(
                             )
                         except Exception as e:
                             cprint(f"  [WARNING] HandModel method failed: {e}, falling back to SAPIEN method", "yellow")
-                            hand_surface_points, hand_surface_normals, hand_surface_part_ids = get_hand_surface_points_from_sapien(
+                            hand_surface_points, hand_surface_normals, _ = get_hand_surface_points_from_sapien(
                                 viewer, 
                                 robot_idx=0,
                                 num_samples=hand_surface_sample_num,
@@ -1310,7 +1134,7 @@ def store_retargeted_poses(
                     else:
                         # 使用 SAPIEN 方法
                         cprint(f"  [INFO] Using SAPIEN method to extract hand surface points...", "cyan")
-                        hand_surface_points, hand_surface_normals, hand_surface_part_ids = get_hand_surface_points_from_sapien(
+                        hand_surface_points, hand_surface_normals, _ = get_hand_surface_points_from_sapien(
                             viewer, 
                             robot_idx=0,
                             num_samples=hand_surface_sample_num,
@@ -1322,18 +1146,12 @@ def store_retargeted_poses(
                         cprint(f"  [WARNING] Failed to extract hand surface points", "yellow")
                         hand_surface_points = np.zeros((0, 3))
                         hand_surface_normals = np.zeros((0, 3))
-                        hand_surface_part_ids = np.zeros((0,), dtype=np.int64)
-                    if hand_surface_part_ids is None or len(hand_surface_part_ids) != len(hand_surface_points):
-                        hand_surface_part_ids = np.zeros((len(hand_surface_points),), dtype=np.int64)
                     
                     # 提取物体点云和法线
                     # 注意：缩放应该与 viewer.load_object 中的一致
-                    scene_scale = float(data.get("scene_scale", 1.0))
-                    if dataset_type == "bodex":
-                        actual_scale = obj_scale
-                    else:
-                        actual_scale = obj_scale * scene_scale
-                    cprint(f"  [DEBUG] Object scale: base={obj_scale}, scene_scale={scene_scale}, actual={actual_scale}", "white")
+                    # obj_scale 是 [sx, sy, sz] 数组，scene_scale 是标量
+                    actual_scale = obj_scale * data["scene_scale"]  # [sx*scene_scale, sy*scene_scale, sz*scene_scale]
+                    cprint(f"  [DEBUG] Object scale: base={obj_scale}, scene_scale={data['scene_scale']}, actual={actual_scale}", "white")
                     object_point_cloud, object_normal_cloud = get_object_point_cloud_and_normals(
                         viewer, 
                         object_idx=0, 
@@ -1346,7 +1164,6 @@ def store_retargeted_poses(
                     
                     # 计算物体点云上的 contact map（GenDexGrasp 格式）
                     contact_map_object = np.array([])
-                    contact_map_object_parts = np.array([])
                     
                     if len(hand_surface_points) > 0 and len(object_point_cloud) > 0:
                         # 计算物体点云的接触值（GenDexGrasp 格式）
@@ -1358,31 +1175,8 @@ def store_retargeted_poses(
                             contact_threshold=0.02,
                             use_torch=True
                         )
-                        contact_map_object = contact_map_object.astype(np.float32)
                         cprint(f"  [INFO] Computed contact map on object: shape {contact_map_object.shape}, mean={contact_map_object.mean():.4f}, max={contact_map_object.max():.4f}", "green")
                         cprint(f"  [INFO] Hand surface points: {hand_surface_points.shape}, normals: {hand_surface_normals.shape}", "white")
-                        
-                        # 针对手掌 + 5 根手指分别计算接触图
-                        contact_map_object_parts = np.zeros((len(SHADOWHAND_PART_NAMES), contact_map_object.shape[0]), dtype=np.float32)
-                        part_counts_log = []
-                        for part_idx, part_name in enumerate(SHADOWHAND_PART_NAMES):
-                            mask = (hand_surface_part_ids == part_idx)
-                            part_count = int(np.count_nonzero(mask))
-                            part_counts_log.append((part_name, part_count))
-                            if part_count == 0:
-                                continue
-                            part_points = hand_surface_points[mask]
-                            part_normals = hand_surface_normals[mask]
-                            part_contact_map = compute_contact_map_on_object(
-                                part_points,
-                                part_normals,
-                                object_point_cloud,
-                                object_normal_cloud,
-                                contact_threshold=0.02,
-                                use_torch=True
-                            )
-                            contact_map_object_parts[part_idx] = part_contact_map.astype(np.float32)
-                        cprint(f"  [INFO] Hand part point counts: {part_counts_log}", "white")
                     else:
                         cprint(f"  [WARNING] Cannot compute contact map: hand_points={len(hand_surface_points)}, obj_points={len(object_point_cloud)}", "yellow")
                 except Exception as e:
@@ -1391,7 +1185,6 @@ def store_retargeted_poses(
                     traceback.print_exc()
                     contact_map_object = np.array([])
                 
-
                 # 存储基本信息，使用连续索引作为键，并保存原始索引
                 retargeted_poses_dict[continuous_idx] = {
                     "original_idx": idx,  # 保存原始数据集索引
@@ -1402,12 +1195,10 @@ def store_retargeted_poses(
                     "scene_scale": data["scene_scale"],  # 场景缩放因子（标量）
                     "obj_scale": obj_scale.copy(),  # 物体基础缩放 [sx, sy, sz]
                     "target_pose_world": poses,
-                    "shadow_qpos": pk_qpos.copy(),  # Shadow Hand 原始 qpos
+                    "shadow_qpos": grasp_qpos.copy(),  # Shadow Hand 原始 qpos
                     "robot_pose": [],  # 存储 Omni Hand 的 retargeted qpos 列表
                     # Contact map 数据（物体点云上的接触值，GenDexGrasp 格式）
                     "contact_map_object": contact_map_object if len(contact_map_object) > 0 else np.array([]),  # 物体点云的接触值 (M,)
-                    "contact_map_object_parts": contact_map_object_parts if contact_map_object_parts.size > 0 else np.array([]),  # (6, M)
-                    "contact_map_object_part_names": np.array(SHADOWHAND_PART_NAMES, dtype=object),
                     # 物体数据
                     "object_point_cloud": object_point_cloud if len(object_point_cloud) > 0 else np.array([]),  # 物体点云 (M, 3)
                     "object_normal_cloud": object_normal_cloud if len(object_normal_cloud) > 0 else np.array([]),  # 物体法向量 (M, 3)
@@ -1419,7 +1210,7 @@ def store_retargeted_poses(
                     retargeted_qpos = retarget_shadow_to_robot_no_offset(
                         viewer, shadow_qpos, omni_idx
                     )
-                    # import ipdb; ipdb.set_trace()
+                    
                     if retargeted_qpos is not None:
                         retargeted_poses_dict[continuous_idx]["robot_pose"].append(retargeted_qpos.copy())
                         cprint(f"  [DEBUG] Retargeted to omni: qpos shape {retargeted_qpos.shape}", "white")
@@ -1535,23 +1326,25 @@ def store_retargeted_poses(
                     viewer.scene.update_render()
                     
                     if not viewer.headless:
+                        # 确保 viewer 不是 paused 状态
                         if hasattr(viewer, 'viewer') and viewer.viewer is not None:
                             viewer.viewer.paused = False
+                            
+                            # 持续渲染，但设置一个超时机制
+                            # 渲染一段时间后自动继续（或者等待用户关闭窗口）
                             import time
-                            duration = max(float(visualize_duration), 0.0)
-                            cprint(f"  [INFO] Rendering data {idx} (object: {data['object_id']}, grasp: {data['grasp_type']}) for {duration if duration > 0 else 'unlimited'}s", "cyan")
-                            start_time = time.time()
-                            while True:
-                                if viewer.viewer.closed:
-                                    cprint("  [INFO] Visualization window closed by user, stopping visualization loop.", "yellow")
-                                    visualize = False
-                                    break
+                            render_start_time = time.time()
+                            render_duration = 60.0  # 渲染 60 秒后自动继续
+                            
+                            cprint(f"  [INFO] Rendering data {idx} (object: {data['object_id']}, grasp: {data['grasp_type']})", "cyan")
+                            cprint(f"  [INFO] Close window or wait {render_duration}s to continue...", "yellow")
+                            
+                            while not viewer.viewer.closed:
                                 viewer.viewer.render()
-                                if duration > 0 and time.time() - start_time >= duration:
+                                # 如果超过指定时间，自动继续
+                                if time.time() - render_start_time > render_duration:
+                                    cprint(f"  [INFO] Timeout reached, continuing to next sample...", "yellow")
                                     break
-                            if not visualize:
-                                # viewer window closed, switch to headless for remaining samples
-                                viewer.headless = True
                         else:
                             cprint(f"  [WARNING] Viewer not initialized, skipping visualization", "yellow")
                     else:
@@ -1604,7 +1397,6 @@ def store_retargeted_poses(
 
 def main(
     dexonomy_dir: str = "/home/guizhewei/guizhewei/Dexonomy_dataset",
-    dataset_type: str = "dexonomy",
     robots: List[RobotName] = [RobotName.shadow_no_wrist, RobotName.allegro],
     retargeting_type: str = "VECTOR",
     two_optimizers: bool = False,
@@ -1620,15 +1412,12 @@ def main(
     hand_surface_sample_num: int = 5000,
     use_fps_for_object: bool = True,
     visualize_hand_points: bool = False,
-    bodex_envs: Optional[List[str]] = None,
-    visualize_duration: float = 20.0,
 ):
     """
     主函数：存储 Shadow Hand 到其他机器手的 retargeting 结果
     
     Args:
-        dexonomy_dir: 数据集根目录（Dexonomy 或 BoDex）
-        dataset_type: 数据集类型，"dexonomy" 或 "bodex"
+        dexonomy_dir: Dexonomy 数据集根目录
         robots: 机器人列表，第一个必须是 Shadow Hand，后续是需要 retarget 的目标机器人
         retargeting_type: retargeting 类型
         two_optimizers: 是否使用两个优化器
@@ -1644,11 +1433,7 @@ def main(
         hand_surface_sample_num: 手部表面采样点数（默认 2000）
         use_fps_for_object: 是否使用 FPS (Farthest Point Sampling) 对物体点云进行均匀采样（需要 pytorch3d）
         visualize_hand_points: 是否在 SAPIEN 中可视化手部表面点（需要 visualize=True，橙红色球体）
-        bodex_envs: BoDex 数据集环境过滤（例如 ["floating"]），默认为全部
-        visualize_duration: 每个数据样本的可视化时长（秒）
-        visualize_duration: 每个数据样本的可视化时长（秒）
     """
-    dataset_type = dataset_type.lower()
     data_root = Path(dexonomy_dir).absolute()
     robot_dir = (
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
@@ -1657,9 +1442,9 @@ def main(
     RetargetingConfig.set_default_urdf_dir(robot_dir)
     
     if not data_root.exists():
-        raise ValueError(f"Dataset path does not exist: {data_root}")
+        raise ValueError(f"Path to Dexonomy dir: {data_root} does not exist.")
     else:
-        cprint(f"Using dataset dir ({dataset_type}): {data_root}", "green")
+        cprint(f"Using Dexonomy dir: {data_root}", "green")
     
     # 验证第一个机器人是 Shadow Hand
     if robots[0] != RobotName.shadow_no_wrist:
@@ -1682,9 +1467,6 @@ def main(
         hand_surface_sample_num=hand_surface_sample_num,
         use_fps_for_object=use_fps_for_object,
         visualize_hand_points=visualize_hand_points,
-        dataset_type=dataset_type,
-        bodex_envs=bodex_envs,
-        visualize_duration=visualize_duration,
     )
 
 

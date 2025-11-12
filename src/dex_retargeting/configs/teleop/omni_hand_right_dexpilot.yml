@@ -16,4 +16,4 @@ retargeting:
   scaling_factor: 0.8 # 1.4 for mano to omni, 0.8 for shadow to omni
   
   # A smaller alpha means stronger filtering, i.e. more smooth but also larger latency
-  low_pass_alpha: 0.2
+  low_pass_alpha: 1

@@ -36,7 +36,7 @@ python tools/contact_map/visualize_dexonomy_grasp.py \
     --data_idx 0 \
     --contact_map_path /path/to/grasp_poses_retargeted_xxx.npy \
     --contact_map_idx 0 \
-    --show_contact_map True
+    --show_contact_map
 ```
 
 **效果：**
@@ -100,8 +100,8 @@ python tools/contact_map/visualize_dexonomy_grasp.py \
 python tools/contact_map/visualize_dexonomy_grasp.py \
     --contact_map_path data.npy \
     --contact_map_idx 0 \
-    --show_contact_map True \
-    --show_object_points True
+    --show_contact_map \
+    --show_object_points
 ```
 
 **检查：**
