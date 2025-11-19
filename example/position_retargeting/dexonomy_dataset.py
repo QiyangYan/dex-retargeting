@@ -13,10 +13,10 @@ class DexonomyGraspDataset:
     
     # TODO:31 grasp types from GRASP taxonomy
     GRASP_TYPES = [
-        # "1_Large_Diameter",
-        # "2_Small_Diameter", 
-        # "3_Medium_Wrap",
-        # "4_Adducted_Thumb",
+        "1_Large_Diameter",
+        "2_Small_Diameter", 
+        "3_Medium_Wrap",
+        "4_Adducted_Thumb",
         "5_Light_Tool",
         "6_Prismatic_4_Finger",
         "7_Prismatic_3_Finger",

@@ -1,5 +1,5 @@
 """
-Visualize Dexonomy grasp dataset with Shadow Hand and OmniHand in SAPIEN
+Visualize Dexonomy/BoDex grasp datasets with Shadow Hand and OmniHand in SAPIEN
 支持叠加显示 contact map 可视化，并自动生成 contact map 值分布统计图
 
 新功能：
@@ -49,6 +49,7 @@ grandparent_dir = parent_dir.parent  # position_retargeting/
 sys.path.insert(0, str(grandparent_dir))
 
 from dexonomy_dataset import DexonomyGraspDataset
+from bodex_dataset import BoDexGraspDataset
 from dexonomy_viewer import DexonomyGraspSAPIENViewer
 from dex_retargeting.constants import RobotName, HandType, RetargetingType
 from dex_retargeting.retargeting_config import RetargetingConfig
@@ -552,6 +553,7 @@ def visualize_object_surface_points_with_contact_map(
 
 def visualize_dexonomy_grasp(
     dexonomy_dir: str = "/home/guizhewei/guizhewei/Dexonomy_dataset",
+    dataset_type: str = "dexonomy",
     robots: Optional[List[RobotName]] = None,
     grasp_type: Optional[str] = None,
     object_id: Optional[str] = None,
@@ -576,6 +578,7 @@ def visualize_dexonomy_grasp(
     contact_max_points: int = 5000,
     contact_sphere_alpha: float = 0.7,
     show_contact_map_parts: bool = False,
+    bodex_envs: Optional[List[str]] = None,
 ):
     """
     Visualize Dexonomy grasp dataset with Shadow Hand and optional retargeting to other hands
@@ -626,7 +629,10 @@ def visualize_dexonomy_grasp(
     # Setup paths
     data_root = Path(dexonomy_dir).absolute()
     if not data_root.exists():
-        raise ValueError(f"Dexonomy directory does not exist: {data_root}")
+        raise ValueError(f"Dataset directory does not exist: {data_root}")
+    dataset_type = dataset_type.lower()
+    if dataset_type not in {"dexonomy", "bodex"}:
+        raise ValueError(f"Unsupported dataset_type: {dataset_type}")
     
     # 当前文件: tools/contact_map/visualize_dexonomy_grasp.py
     # 目标路径: dex-retargeting/assets/robots/hands
@@ -654,6 +660,7 @@ def visualize_dexonomy_grasp(
     cprint(f"Dexonomy Grasp Visualization", "cyan", attrs=["bold"])
     cprint(f"{'='*60}", "cyan")
     cprint(f"Dataset: {data_root}", "green")
+    cprint(f"Dataset Type: {dataset_type}", "green")
     cprint(f"Robots: {robots}", "green")
     cprint(f"Split: {split}", "green")
     if grasp_type:
@@ -669,19 +676,38 @@ def visualize_dexonomy_grasp(
     cprint(f"{'='*60}\n", "cyan")
     
     # Load dataset
-    dataset = DexonomyGraspDataset(
-        data_root=data_root,
-        grasp_type=grasp_type,
-        object_ids=[object_id] if object_id else None,
-        split=split,
-    )
+    if dataset_type == "dexonomy":
+        dataset = DexonomyGraspDataset(
+            data_root=data_root,
+            grasp_type=grasp_type,
+            object_ids=[object_id] if object_id else None,
+            split=split,
+        )
+    else:
+        if grasp_type is not None:
+            cprint("[WARNING] grasp_type filtering is not supported for BoDex dataset; ignoring.", "yellow")
+            grasp_type = None
+        dataset = BoDexGraspDataset(
+            data_root=data_root,
+            object_ids=[object_id] if object_id else None,
+            split=split,
+            env_types=bodex_envs,
+        )
     
     if len(dataset) == 0:
         cprint("[ERROR] No grasp samples found in dataset!", "red")
         return
     
     # Get grasp sample
-    if object_id and grasp_type:
+    if contact_map_data is not None and "original_idx" in contact_map_data:
+        original_idx = int(contact_map_data["original_idx"])
+        if 0 <= original_idx < len(dataset):
+            data_idx = original_idx
+            cprint(f"[INFO] Using original_idx {original_idx} from contact map data", "green")
+        else:
+            cprint(f"[WARNING] original_idx {original_idx} out of range for dataset size {len(dataset)}", "yellow")
+
+    if object_id and grasp_type and dataset_type == "dexonomy":
         # Load specific grasp
         grasp_data = dataset.get_grasp_by_object_and_type(
             object_id=object_id,
@@ -704,8 +730,10 @@ def visualize_dexonomy_grasp(
     cprint(f"  Object ID: {grasp_data['object_id']}", "yellow")
     cprint(f"  Scale: {grasp_data['scale_name']}", "yellow")
     cprint(f"  Grasp Index: {grasp_data['grasp_idx']}/{grasp_data['num_grasps_in_file']}", "yellow")
-    cprint(f"  Object Mass: {grasp_data['object_info']['mass']:.3f} kg", "yellow")
-    cprint(f"  Object OBB: {grasp_data['object_info']['obb']}", "yellow")
+    if "object_info" in grasp_data and "mass" in grasp_data["object_info"]:
+        cprint(f"  Object Mass: {grasp_data['object_info']['mass']:.3f} kg", "yellow")
+    if "object_info" in grasp_data and "obb" in grasp_data["object_info"]:
+        cprint(f"  Object OBB: {grasp_data['object_info']['obb']}", "yellow")
     
     # Viewer 工厂函数，便于在多次可视化（如逐指显示）时重建 viewer
     def create_viewer_instance() -> DexonomyGraspSAPIENViewer:
@@ -839,11 +867,16 @@ def visualize_dexonomy_grasp(
     
     # Render grasp(s)
     if num_grasps == 1:
+        # Always show overall contact map first (if available)
+        render_with_contact_map(grasp_data)
+
+        # Afterwards, optionally iterate per-part contact maps
         if show_contact_map_parts:
             if contact_map_parts is None or contact_map_parts.size == 0:
-                cprint("[WARNING] show_contact_map_parts=True but per-part contact map data is unavailable. Showing overall contact map instead.", "yellow")
+                cprint("[WARNING] show_contact_map_parts=True but per-part contact map data is unavailable. Skipping per-part visualization.", "yellow")
             else:
-                cprint("\n[INFO] Sequentially visualizing contact map for palm & each finger. Close the viewer window to proceed to the next part.", "cyan")
+                viewer = None  # rebuild viewer for each part for clarity
+                cprint("\n[INFO] Visualizing contact map for palm & each finger. Close the viewer window to proceed to the next part.", "cyan")
                 total_parts = contact_map_parts.shape[0]
                 for idx in range(total_parts):
                     part_map = contact_map_parts[idx]
@@ -859,10 +892,6 @@ def visualize_dexonomy_grasp(
                         total_parts=total_parts,
                     )
                     viewer = None  # 下一次循环重建 viewer
-                return
-
-        # Render single grasp (overall contact map or none)
-        render_with_contact_map(grasp_data)
     else:
         # Render multiple consecutive grasps
         cprint(f"\n[INFO] Rendering {num_grasps} consecutive grasps starting from index {data_idx}", "cyan")
@@ -897,6 +926,7 @@ def visualize_dexonomy_grasp(
 
 def main(
     dexonomy_dir: str = "/home/guizhewei/guizhewei/Dexonomy_dataset",
+    dataset_type: str = "dexonomy",
     robots: Optional[List[RobotName]] = None,
     grasp_type: Optional[str] = None,
     object_id: Optional[str] = None,
@@ -921,12 +951,14 @@ def main(
     contact_max_points: int = 5000,
     contact_sphere_alpha: float = 0.7,
     show_contact_map_parts: bool = False,
+    bodex_envs: Optional[List[str]] = None,
 ):
     """
-    Visualize Dexonomy grasp dataset with optional contact map overlay
+    Visualize Dexonomy/BoDex grasp dataset with optional contact map overlay
     
     Args:
-        dexonomy_dir: Root directory of Dexonomy dataset
+        dexonomy_dir: Root directory of the dataset
+        dataset_type: Dataset type ("dexonomy" or "bodex")
         robots: List of robot hands (e.g., shadow, allegro, omni)
         grasp_type: Specific grasp type (e.g., "1_Large_Diameter")
         object_id: Specific object ID (32-char hex string)
@@ -1002,6 +1034,7 @@ def main(
     """
     visualize_dexonomy_grasp(
         dexonomy_dir=dexonomy_dir,
+        dataset_type=dataset_type,
         robots=robots,
         grasp_type=grasp_type,
         object_id=object_id,
@@ -1026,6 +1059,7 @@ def main(
         contact_max_points=contact_max_points,
         contact_sphere_alpha=contact_sphere_alpha,
         show_contact_map_parts=show_contact_map_parts,
+        bodex_envs=bodex_envs,
     )
 
 
