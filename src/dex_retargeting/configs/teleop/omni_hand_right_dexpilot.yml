@@ -11,7 +11,7 @@ retargeting:
   
   wrist_link_name: "hand_base_link"
 
-  finger_tip_link_names: [ "thumb_distal",  "index_distal", "middle_distal", "ring_distal", "pinky_distal" ]
+  finger_tip_link_names: [ "thumb_tip",  "index_tip", "middle_tip", "ring_tip", "pinky_tip" ]
   
   scaling_factor: 0.8 # 1.4 for mano to omni, 0.8 for shadow to omni
   
